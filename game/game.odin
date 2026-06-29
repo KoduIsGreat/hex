@@ -28,6 +28,7 @@ SPRITE_W :: f32(32)
 SPRITE_H :: f32(48)
 
 TILE_TYPE :: enum u8 {
+	// Row 0: temperate terrain
 	Grass,
 	LightForest,
 	DenseForest,
@@ -36,9 +37,39 @@ TILE_TYPE :: enum u8 {
 	Mountain,
 	Ocean,
 	DeepOcean,
+	// Row 1: settlements + warm terrain
 	Village,
 	Town,
 	Capital,
+	DesertOrange,
+	Jungle,
+	Savanna,
+	Plains,
+	Swamp,
+	// Row 2: snow / tundra
+	Snow,
+	SnowForest,
+	SnowDense,
+	SnowRocky,
+	SnowPines,
+	Ice,
+	SnowVillage,
+	SnowCapital,
+	// Row 3: desert
+	Sand,
+	SandRocky,
+	Dunes,
+	Mesa,
+	Oasis,
+	DesertRocky,
+	DesertVillage,
+	DesertCapital,
+	// Row 4-5: features
+	Port,
+	Port2,
+	Lighthouse,
+	Cave,
+	Ruins,
 }
 
 
@@ -54,52 +85,61 @@ init :: proc() {
 	}
 	world_cache = make(map[ChunkCoord]^Chunk)
 	river_tiles = make(map[Hex]bool)
+	lake_tiles = make(map[Hex]bool)
 	traced_sources = make(map[ChunkCoord]bool)
 	prev_world_seed = world_seed
 	prev_noise_freq = noise_freq
 }
 
 
-grass :: k2.Rect{0, 0, 32, 48}
-lforest :: k2.Rect{32, 0, 32, 48}
-dforest :: k2.Rect{64, 0, 32, 48}
-rockyhills :: k2.Rect{96, 0, 32, 48}
-rockyuplands :: k2.Rect{128, 0, 32, 48}
-mountain :: k2.Rect{160, 0, 32, 48}
-ocean :: k2.Rect{192, 0, 32, 48}
-deepocean :: k2.Rect{224, 0, 32, 48}
-village :: k2.Rect{0, 32, 32, 48}
-town :: k2.Rect{32, 32, 32, 48}
-capital :: k2.Rect{64, 0, 32, 48}
+// Atlas cell (col, row) -> source rect. Cells are 32 wide x 48 tall.
+cell :: proc "contextless" (col, row: int) -> k2.Rect {
+	return k2.Rect{f32(col) * SPRITE_W, f32(row) * SPRITE_H, SPRITE_W, SPRITE_H}
+}
 
+// Source rect in the atlas for each tile type, laid out to match hex.png.
+tile_rects := [TILE_TYPE]k2.Rect {
+	.Grass         = cell(0, 0),
+	.LightForest   = cell(1, 0),
+	.DenseForest   = cell(2, 0),
+	.RockyHills    = cell(3, 0),
+	.RockyUplands  = cell(4, 0),
+	.Mountain      = cell(5, 0),
+	.Ocean         = cell(6, 0),
+	.DeepOcean     = cell(7, 0),
+	.Village       = cell(0, 1),
+	.Town          = cell(1, 1),
+	.Capital       = cell(2, 1),
+	.DesertOrange  = cell(3, 1),
+	.Jungle        = cell(4, 1),
+	.Savanna       = cell(5, 1),
+	.Plains        = cell(6, 1),
+	.Swamp         = cell(7, 1),
+	.Snow          = cell(0, 2),
+	.SnowForest    = cell(1, 2),
+	.SnowDense     = cell(2, 2),
+	.SnowRocky     = cell(3, 2),
+	.SnowPines     = cell(4, 2),
+	.Ice           = cell(5, 2),
+	.SnowVillage   = cell(6, 2),
+	.SnowCapital   = cell(7, 2),
+	.Sand          = cell(0, 3),
+	.SandRocky     = cell(1, 3),
+	.Dunes         = cell(2, 3),
+	.Mesa          = cell(3, 3),
+	.Oasis         = cell(4, 3),
+	.DesertRocky   = cell(5, 3),
+	.DesertVillage = cell(6, 3),
+	.DesertCapital = cell(7, 3),
+	.Port          = cell(4, 4),
+	.Port2         = cell(5, 4),
+	.Lighthouse    = cell(6, 4),
+	.Cave          = cell(7, 4),
+	.Ruins         = cell(0, 5),
+}
 
-// Source rect in the atlas for a tile type.
 tile_rect :: proc(t: TILE_TYPE) -> k2.Rect {
-	switch t {
-	case .Grass:
-		return grass
-	case .LightForest:
-		return lforest
-	case .DenseForest:
-		return dforest
-	case .RockyHills:
-		return rockyhills
-	case .RockyUplands:
-		return rockyuplands
-	case .Mountain:
-		return mountain
-	case .Ocean:
-		return ocean
-	case .DeepOcean:
-		return deepocean
-	case .Village:
-		return village
-	case .Town:
-		return town
-	case .Capital:
-		return capital
-	}
-	return grass
+	return tile_rects[t]
 }
 
 
@@ -160,46 +200,115 @@ elevation_at :: proc(center: Vec2) -> f64 {
 	return fbm(warp(p, world_seed), world_seed, NOISE_OCTAVES)
 }
 
-// Stateless biome: pure function of a hex's world-space center. Combines
-// elevation (continents/coast), ridged noise (mountain ranges) and moisture
-// (forests) into a tile type.
+TEMP_FREQ :: f64(0.35) // temperature varies more slowly than elevation
+TEMP_LAPSE :: f64(0.7) // how strongly altitude cools the climate
+COLD :: f64(0.30) // temperature below this is cold/tundra
+HOT :: f64(0.65) // temperature above this is hot/arid
+
+// Moisture field, [0,1]. Larger, slower regions than elevation.
+moisture_at :: proc(p: [2]f64) -> f64 {
+	return (fbm({p.x * 0.6 + 100, p.y * 0.6 + 100}, world_seed + 303, 3) + 1) * 0.5
+}
+
+// Temperature field, [0,1]. A slow noise field, cooled by altitude.
+temperature_at :: proc(p: [2]f64, e01: f64) -> f64 {
+	base := (fbm({p.x * TEMP_FREQ + 50, p.y * TEMP_FREQ - 70}, world_seed + 555, 3) + 1) * 0.5
+	return clamp(base - TEMP_LAPSE * max(0, e01 - 0.5), 0, 1)
+}
+
+// Stateless biome via a Whittaker-style model: elevation picks water/coast/
+// mountain; on land, temperature x moisture select the biome.
 biome_at :: proc(center: Vec2) -> TILE_TYPE {
 	p := [2]f64{f64(center.x) * noise_freq, f64(center.y) * noise_freq}
-
-	// Elevation -> oceans and coastline.
 	e := elevation_at(center)
-	switch {
-	case e < SEA_DEEP:
-		return .DeepOcean
-	case e < SEA:
-		return .Ocean
-	case e < COAST:
-		return .Grass // coastal lowland
-	}
 	e01 := (e + 1) * 0.5
+	t := temperature_at(p, e01)
+
+	// Water (cold seas freeze into ice).
+	if e < SEA_DEEP {
+		return .DeepOcean
+	}
+	if e < SEA {
+		return .Ice if t < COLD - 0.08 else .Ocean
+	}
+
+	m := moisture_at(p)
+
+	// Coastal lowland just above sea level, flavored by climate.
+	if e < COAST {
+		switch {
+		case t < COLD:
+			return .Snow
+		case t > HOT && m > 0.6:
+			return .Swamp
+		case:
+			return .Grass
+		}
+	}
 
 	// Mountain ranges -> ridged noise, amplified at altitude.
 	ridge := ridged({p.x * 1.3, p.y * 1.3}, world_seed + 404, NOISE_OCTAVES)
 	mtn := ridge * (0.45 + 0.55 * e01)
-	switch {
-	case mtn > MTN_PEAK:
+	if mtn > MTN_PEAK {
 		return .Mountain
-	case mtn > MTN_HIGH:
-		return .RockyUplands
-	case mtn > MTN_HILL:
-		return .RockyHills
+	}
+	if mtn > MTN_HIGH {
+		switch {
+		case t < COLD:
+			return .SnowPines
+		case t > HOT && m < 0.4:
+			return .Mesa
+		case:
+			return .RockyUplands
+		}
+	}
+	if mtn > MTN_HILL {
+		switch {
+		case t < COLD:
+			return .SnowRocky
+		case t > HOT && m < 0.4:
+			return .Mesa
+		case:
+			return .RockyHills
+		}
 	}
 
-	// Lowlands -> moisture decides forest density; dry highlands roll into hills.
-	m := fbm({p.x * 0.6 + 100, p.y * 0.6 + 100}, world_seed + 303, 3)
-	m01 := (m + 1) * 0.5
+	// Lowlands: temperature band, then moisture.
 	switch {
-	case m01 > FOREST_DENSE:
-		return .DenseForest
-	case m01 > FOREST_LIGHT:
-		return .LightForest
+	case t < COLD: // cold
+		switch {
+		case m > 0.60:
+			return .SnowDense
+		case m > 0.35:
+			return .SnowForest
+		case:
+			return .Snow
+		}
+	case t < HOT: // temperate
+		switch {
+		case m > 0.60:
+			return .DenseForest
+		case m > 0.40:
+			return .LightForest
+		case m > 0.22:
+			return .Grass
+		case:
+			return .Plains
+		}
+	case: // hot
+		switch {
+		case m > 0.62:
+			return .Jungle
+		case m > 0.45:
+			return .Savanna
+		case m > 0.28:
+			return .Grass
+		case m > 0.15:
+			return .Sand
+		case:
+			return .Dunes
+		}
 	}
-	return .RockyHills if e01 > 0.62 else .Grass // rolling hills vs plains
 }
 
 
@@ -212,7 +321,16 @@ RIVER_SRC_CELL :: i32(18) // one candidate source per this many hexes
 RIVER_MAX_LEN :: i32(80) // max hexes a single river is traced
 RIVER_SOURCE_ELEV :: f64(0.45) // min elevation (raw fbm) for a source to spawn
 
+LAKE_MAX_TILES :: 500 // cap on a single lake/inland sea
+LAKE_REACH :: i32(24) // max hex distance a lake spreads from its terminus
+LAKE_DEPTH :: f64(0.05) // water rises this much above the terminus elevation
+
+// A river that could affect this chunk may start up to RIVER_MAX_LEN away and
+// then pool a lake reaching LAKE_REACH further, so search sources in that span.
+RIVER_REACH :: RIVER_MAX_LEN + LAKE_REACH
+
 river_tiles: map[Hex]bool // hexes that carry a river
+lake_tiles: map[Hex]bool // hexes that are lake/inland-sea water
 traced_sources: map[ChunkCoord]bool // source cells already evaluated
 
 // Integer hash (splitmix-ish) for deterministic source placement.
@@ -254,19 +372,47 @@ trace_river :: proc(source: Hex) {
 			}
 		}
 		if best == h {
-			return // local minimum (would pool into a lake)
+			fill_lake(h, e) // local minimum: water pools into a lake
+			return
 		}
 		h = best
+	}
+}
+
+// Flood-fill a depression from its lowest point up to a fixed water level.
+// Bounded by tile count and reach so it stays deterministic and chunk-safe.
+fill_lake :: proc(start: Hex, terminus_e: f64) {
+	level := terminus_e + LAKE_DEPTH
+	frontier := make([dynamic]Hex, context.temp_allocator)
+	append(&frontier, start)
+	count := 0
+	for len(frontier) > 0 && count < LAKE_MAX_TILES {
+		h := pop(&frontier)
+		if h in lake_tiles {
+			continue
+		}
+		if hex_distance(h, start) > LAKE_REACH {
+			continue // keep extent bounded for chunk completeness
+		}
+		e := elevation_at(hex_to_world(h, HEX_SIZE, ORIENT))
+		if e < SEA || e > level {
+			continue // below: it's the ocean; above: it's the shore
+		}
+		lake_tiles[h] = true
+		count += 1
+		for d in HEX_DIRS {
+			append(&frontier, hex_add(h, d))
+		}
 	}
 }
 
 // Trace every source whose river could possibly reach this chunk, so a chunk's
 // rivers are complete no matter what order chunks are generated in.
 ensure_rivers_near :: proc(cc: ChunkCoord) {
-	cx_lo := floor_div(cc.x * CHUNK_SIZE - RIVER_MAX_LEN, RIVER_SRC_CELL)
-	cx_hi := floor_div(cc.x * CHUNK_SIZE + CHUNK_SIZE - 1 + RIVER_MAX_LEN, RIVER_SRC_CELL)
-	cy_lo := floor_div(cc.y * CHUNK_SIZE - RIVER_MAX_LEN, RIVER_SRC_CELL)
-	cy_hi := floor_div(cc.y * CHUNK_SIZE + CHUNK_SIZE - 1 + RIVER_MAX_LEN, RIVER_SRC_CELL)
+	cx_lo := floor_div(cc.x * CHUNK_SIZE - RIVER_REACH, RIVER_SRC_CELL)
+	cx_hi := floor_div(cc.x * CHUNK_SIZE + CHUNK_SIZE - 1 + RIVER_REACH, RIVER_SRC_CELL)
+	cy_lo := floor_div(cc.y * CHUNK_SIZE - RIVER_REACH, RIVER_SRC_CELL)
+	cy_hi := floor_div(cc.y * CHUNK_SIZE + CHUNK_SIZE - 1 + RIVER_REACH, RIVER_SRC_CELL)
 	for cy in cy_lo ..= cy_hi {
 		for cx in cx_lo ..= cx_hi {
 			key := ChunkCoord{cx, cy}
@@ -335,8 +481,8 @@ biome_cached :: proc(h: Hex) -> TILE_TYPE {
 				r := base_r + i32(ly)
 				hh := Hex{q, r, -q - r}
 				b := biome_at(hex_to_world(hh, HEX_SIZE, ORIENT))
-				// A river turns land into water, but not mountains or existing sea.
-				if hh in river_tiles {
+				// Rivers and lakes turn land into water (not mountains or existing sea).
+				if hh in river_tiles || hh in lake_tiles {
 					#partial switch b {
 					case .DeepOcean, .Ocean, .Mountain:
 					// leave as-is
@@ -362,6 +508,7 @@ world_cache_clear :: proc() {
 	}
 	clear(&world_cache)
 	clear(&river_tiles)
+	clear(&lake_tiles)
 	clear(&traced_sources)
 }
 

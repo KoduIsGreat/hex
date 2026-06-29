@@ -20,6 +20,11 @@ hex_add :: proc(a, b: Hex) -> Hex {
 	return Hex{a[0] + b[0], a[1] + b[1], a[2] + b[2]}
 }
 
+// Hex grid distance between two cube coords.
+hex_distance :: proc(a, b: Hex) -> i32 {
+	return (abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])) / 2
+}
+
 // The six cube-coordinate neighbor offsets.
 HEX_DIRS :: [6]Hex {
 	{+1, -1, 0},
