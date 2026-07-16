@@ -74,7 +74,7 @@ TILE_TYPE :: enum u8 {
 
 
 init :: proc() {
-	k2.init(1280, 720, "Hex example")
+	k2.init(1280, 720, "Wayfinder PoC")
 	hex_tex = k2.load_texture_from_bytes(#load("../assets/hex.png"))
 	cloud_shader = k2.load_shader_from_bytes(#load("clouds.vert"), #load("clouds.frag"))
 	fmt.printfln("hex h=%v w=%v", hex_tex.height, hex_tex.width)
@@ -89,6 +89,7 @@ init :: proc() {
 	traced_sources = make(map[ChunkCoord]bool)
 	prev_world_seed = world_seed
 	prev_noise_freq = noise_freq
+	expedition_init()
 }
 
 
@@ -558,6 +559,7 @@ visible_hex_bounds :: proc(c: k2.Camera, size: f32, orient: Orientation) -> HexB
 main :: proc() {
 	init()
 	for step() {}
+	expedition_shutdown()
 	k2.shutdown()
 }
 
@@ -700,9 +702,19 @@ draw :: proc() {
 			for q in b.q_min ..= b.q_max {
 				h := Hex{q, r, -q - r}
 				center := hex_to_world(h, HEX_SIZE, ORIENT)
-				k2.draw_texture_rect(hex_tex, tile_rect(biome_cached(h)), center, origin, 0, land_tint)
+				if in_arena(h) && !is_revealed(h) {
+					// Fogged tile: hide true biome.
+					k2.draw_circle(center, HEX_SIZE * 0.92, FOG_COLOR, 6)
+					if expedition.show_belief {
+						bc := belief_overlay_color(h)
+						k2.draw_circle(center, HEX_SIZE * 0.7, bc, 6)
+					}
+				} else {
+					k2.draw_texture_rect(hex_tex, tile_rect(biome_cached(h)), center, origin, 0, land_tint)
+				}
 			}
 		}
+		expedition_draw_overlays()
 		k2.set_camera(nil)
 		draw_clouds(1, 1) // drifting cloud shadows on the terrain
 	} else {
@@ -763,20 +775,60 @@ draw_clouds :: proc(mode, blend: f32) {
 
 draw_hud :: proc() {
 	chunks := len(world_cache)
-	ft := f32(k2.get_time()) / DAY_LENGTH
-	hour := int((ft - math.floor_f32(ft)) * 24)
+	hover := world_to_hex(k2.screen_to_world(k2.get_mouse_position(), camera), HEX_SIZE, ORIENT)
+	belief_line := ""
+	if in_arena(hover) && !is_revealed(hover) {
+		b := belief_get(hover)
+		belief_line = fmt.tprintf(
+			"\nhover fog: %s %.0f%% conf %.0f%%",
+			terrain_name(belief_argmax(b)),
+			b.p[belief_argmax(b)] * 100,
+			b.confidence * 100,
+		)
+	} else if in_arena(hover) && is_revealed(hover) {
+		belief_line = fmt.tprintf("\nhover: %s", terrain_name(terrain_at(hover)))
+	}
+
+	mode_line := fmt.tprintf(
+		"mode: %s  danger: %.0f  reveals: %v/%v",
+		mission_mode_name(expedition.mode),
+		expedition.doctrine.ration_danger,
+		expedition.reveal_attempts,
+		expedition.doctrine.max_reveal_attempts,
+	)
+
 	info := fmt.tprintf(
-		"seed: %v\nfreq: %.5f\nzoom: %.2f\nchunks: %v (%v KB)\ntime: %02v:00\n\n[WASD] pan  [wheel] zoom\n[R] new seed  [-/=] freq",
+		"WAYFINDER PoC\n%s\n%s\ndays: %v  rations: %.1f\npath: %s\nbelief: %s\nseed: %v  zoom: %.2f  chunks: %v%s\n\n[click] goal  [Space] step  [Enter] play/pause\n[1/2/3] doctrine  [B] belief  [WASD] pan  [R] seed",
+		expedition.doctrine.name,
+		mode_line,
+		expedition.days_elapsed,
+		expedition.rations,
+		expedition.path.found ? fmt.tprintf("%.1f days", expedition.path.cost) : "none",
+		expedition.show_belief ? "ON" : "OFF",
 		world_seed,
-		noise_freq,
 		camera.zoom,
 		chunks,
-		chunks * size_of(Chunk) / 1024,
-		hour,
+		belief_line,
 	)
-	// Shadow then text for legibility over any tile.
 	k2.draw_text(info, {9, 9}, 16, k2.BLACK)
 	k2.draw_text(info, {8, 8}, 16, k2.WHITE)
+
+	ss := k2.get_screen_size()
+	status := expedition_status()
+	k2.draw_text(status, {9, ss.y - 27}, 16, k2.BLACK)
+	k2.draw_text(status, {8, ss.y - 28}, 16, k2.YELLOW)
+
+	// Decision trace strip (last 4 entries) above status.
+	recent := trace_recent(4)
+	y := ss.y - 28 - f32(len(recent) + 1) * 18
+	k2.draw_text("Trace:", {9, y + 1}, 14, k2.BLACK)
+	k2.draw_text("Trace:", {8, y}, 14, k2.LIGHT_GRAY)
+	for e, i in recent {
+		line := fmt.tprintf("D%v [%s] %s", e.day, mission_mode_name(e.mode), trace_reason(&recent[i]))
+		yy := y + f32(i + 1) * 18
+		k2.draw_text(line, {9, yy + 1}, 14, k2.BLACK)
+		k2.draw_text(line, {8, yy}, 14, k2.Color{200, 220, 180, 255})
+	}
 }
 
 ZOOM_MIN :: f32(0.25)
@@ -821,6 +873,38 @@ handle_input :: proc() {
 		noise_freq /= math.pow(FREQ_RATE, f64(dt))
 	}
 	noise_freq = clamp(noise_freq, NOISE_FREQ_MIN, NOISE_FREQ_MAX)
+
+	// Doctrine presets.
+	if k2.key_went_down(.N1) {
+		expedition_set_doctrine(doctrine_cautious())
+	}
+	if k2.key_went_down(.N2) {
+		expedition_set_doctrine(doctrine_aggressive_surveyor())
+	}
+	if k2.key_went_down(.N3) {
+		expedition_set_doctrine(doctrine_opportunistic_forager())
+	}
+
+	// Belief overlay toggle.
+	if k2.key_went_down(.B) {
+		expedition.show_belief = !expedition.show_belief
+	}
+
+	// Single step / play-pause.
+	if k2.key_went_down(.Space) {
+		expedition.playing = false
+		expedition_step()
+	}
+	if k2.key_went_down(.Enter) {
+		expedition.playing = !expedition.playing
+		expedition.step_timer = 0
+	}
+
+	// Left click: set pathfinding goal.
+	if k2.mouse_button_went_down(.Left) && globe_blend() <= 0 {
+		goal := world_to_hex(k2.screen_to_world(k2.get_mouse_position(), camera), HEX_SIZE, ORIENT)
+		expedition_set_goal(goal)
+	}
 }
 
 step :: proc() -> bool {
@@ -829,12 +913,14 @@ step :: proc() -> bool {
 	}
 	frame_counter += 1
 	handle_input()
+	expedition_update(k2.get_frame_time())
 
 	// Worldgen params changed -> the cached tiles are stale.
 	if world_seed != prev_world_seed || noise_freq != prev_noise_freq {
 		world_cache_clear()
 		prev_world_seed = world_seed
 		prev_noise_freq = noise_freq
+		expedition_reset_world()
 	}
 
 	draw()
