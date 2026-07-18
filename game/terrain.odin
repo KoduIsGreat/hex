@@ -37,7 +37,7 @@ tile_to_terrain :: proc(t: TILE_TYPE) -> TerrainKind {
 }
 
 terrain_at :: proc(h: Hex) -> TerrainKind {
-	return tile_to_terrain(biome_cached(h))
+	return tile_to_terrain(world_tile(h))
 }
 
 base_day_cost :: proc(k: TerrainKind) -> f32 {

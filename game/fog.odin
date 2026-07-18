@@ -2,7 +2,9 @@ package game
 
 import k2 "karl2d"
 
-ARENA_RADIUS :: i32(40)
+// The playable arena is the whole finite world (see world.odin). in_arena is
+// therefore also the "inside the baked world" test used by world_tile.
+ARENA_RADIUS :: WORLD_RADIUS
 FOG_COLOR :: k2.Color{18, 22, 32, 220}
 
 revealed: map[Hex]bool

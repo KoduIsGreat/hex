@@ -2,7 +2,6 @@ package game
 
 import "core:fmt"
 import "core:math"
-import "core:math/noise"
 import "core:math/rand"
 import k2 "karl2d"
 
@@ -16,6 +15,10 @@ fullscreen: bool
 world_seed := i64(447198347)
 // Noise frequency in world (pixel) space. Lower = larger, smoother biomes.
 noise_freq := f64(0.0008)
+
+// Worldgen params last baked; a change triggers a re-bake of the finite world.
+prev_world_seed: i64
+prev_noise_freq: f64
 
 
 // Hex geometry "radius" (center to corner). Distinct from the sprite size below;
@@ -84,10 +87,7 @@ init :: proc() {
 		offset = k2.get_screen_size() * 0.5,
 		zoom   = 1,
 	}
-	world_cache = make(map[ChunkCoord]^Chunk)
-	river_tiles = make(map[Hex]bool)
-	lake_tiles = make(map[Hex]bool)
-	traced_sources = make(map[ChunkCoord]bool)
+	world_init()
 	prev_world_seed = world_seed
 	prev_noise_freq = noise_freq
 	expedition_init()
@@ -146,391 +146,6 @@ tile_rect :: proc(t: TILE_TYPE) -> k2.Rect {
 }
 
 
-// --- Worldgen noise -------------------------------------------------------
-
-NOISE_OCTAVES :: 4
-WARP_STRENGTH :: f64(0.6) // how much domain warping distorts features
-
-// Elevation thresholds (on fbm, ~[-1,1]).
-SEA_DEEP :: f64(-0.35)
-SEA :: f64(-0.12)
-COAST :: f64(-0.02)
-// Mountain thresholds (on the ridged mountain factor, [0,1]).
-MTN_PEAK :: f64(0.62)
-MTN_HIGH :: f64(0.52)
-MTN_HILL :: f64(0.44)
-// Moisture thresholds (on fbm remapped to [0,1]).
-FOREST_DENSE :: f64(0.62)
-FOREST_LIGHT :: f64(0.42)
-
-// Fractal Brownian motion: layered octaves of simplex noise. Returns ~[-1,1].
-fbm :: proc(p: [2]f64, seed: i64, octaves: int) -> f64 {
-	v, amp, freq, norm := 0.0, 1.0, 1.0, 0.0
-	for _ in 0 ..< octaves {
-		v += amp * f64(noise.noise_2d(seed, {p.x * freq, p.y * freq}))
-		norm += amp
-		amp *= 0.5
-		freq *= 2.0
-	}
-	return v / norm
-}
-
-// Ridged multifractal: produces sharp ridge lines (mountain ranges). [0,1].
-ridged :: proc(p: [2]f64, seed: i64, octaves: int) -> f64 {
-	v, amp, freq, norm := 0.0, 0.5, 1.0, 0.0
-	for _ in 0 ..< octaves {
-		n := f64(noise.noise_2d(seed, {p.x * freq, p.y * freq}))
-		n = 1.0 - abs(n) // fold into ridges
-		n *= n // sharpen
-		v += amp * n
-		norm += amp
-		amp *= 0.5
-		freq *= 2.0
-	}
-	return v / norm
-}
-
-// Offset the sample point by another noise field -> organic, non-grid features.
-warp :: proc(p: [2]f64, seed: i64) -> [2]f64 {
-	wx := fbm({p.x, p.y}, seed + 101, 3)
-	wy := fbm({p.x + 5.2, p.y + 1.3}, seed + 202, 3)
-	return {p.x + WARP_STRENGTH * wx, p.y + WARP_STRENGTH * wy}
-}
-
-// Domain-warped elevation field, ~[-1,1]. Shared by biomes and river tracing.
-elevation_at :: proc(center: Vec2) -> f64 {
-	p := [2]f64{f64(center.x) * noise_freq, f64(center.y) * noise_freq}
-	return fbm(warp(p, world_seed), world_seed, NOISE_OCTAVES)
-}
-
-TEMP_FREQ :: f64(0.35) // temperature varies more slowly than elevation
-TEMP_LAPSE :: f64(0.7) // how strongly altitude cools the climate
-COLD :: f64(0.30) // temperature below this is cold/tundra
-HOT :: f64(0.65) // temperature above this is hot/arid
-
-// Moisture field, [0,1]. Larger, slower regions than elevation.
-moisture_at :: proc(p: [2]f64) -> f64 {
-	return (fbm({p.x * 0.6 + 100, p.y * 0.6 + 100}, world_seed + 303, 3) + 1) * 0.5
-}
-
-// Temperature field, [0,1]. A slow noise field, cooled by altitude.
-temperature_at :: proc(p: [2]f64, e01: f64) -> f64 {
-	base := (fbm({p.x * TEMP_FREQ + 50, p.y * TEMP_FREQ - 70}, world_seed + 555, 3) + 1) * 0.5
-	return clamp(base - TEMP_LAPSE * max(0, e01 - 0.5), 0, 1)
-}
-
-// Stateless biome via a Whittaker-style model: elevation picks water/coast/
-// mountain; on land, temperature x moisture select the biome.
-biome_at :: proc(center: Vec2) -> TILE_TYPE {
-	p := [2]f64{f64(center.x) * noise_freq, f64(center.y) * noise_freq}
-	e := elevation_at(center)
-	e01 := (e + 1) * 0.5
-	t := temperature_at(p, e01)
-
-	// Water (cold seas freeze into ice).
-	if e < SEA_DEEP {
-		return .DeepOcean
-	}
-	if e < SEA {
-		return .Ice if t < COLD - 0.08 else .Ocean
-	}
-
-	m := moisture_at(p)
-
-	// Coastal lowland just above sea level, flavored by climate.
-	if e < COAST {
-		switch {
-		case t < COLD:
-			return .Snow
-		case t > HOT && m > 0.6:
-			return .Swamp
-		case:
-			return .Grass
-		}
-	}
-
-	// Mountain ranges -> ridged noise, amplified at altitude.
-	ridge := ridged({p.x * 1.3, p.y * 1.3}, world_seed + 404, NOISE_OCTAVES)
-	mtn := ridge * (0.45 + 0.55 * e01)
-	if mtn > MTN_PEAK {
-		return .Mountain
-	}
-	if mtn > MTN_HIGH {
-		switch {
-		case t < COLD:
-			return .SnowPines
-		case t > HOT && m < 0.4:
-			return .Mesa
-		case:
-			return .RockyUplands
-		}
-	}
-	if mtn > MTN_HILL {
-		switch {
-		case t < COLD:
-			return .SnowRocky
-		case t > HOT && m < 0.4:
-			return .Mesa
-		case:
-			return .RockyHills
-		}
-	}
-
-	// Lowlands: temperature band, then moisture.
-	switch {
-	case t < COLD: // cold
-		switch {
-		case m > 0.60:
-			return .SnowDense
-		case m > 0.35:
-			return .SnowForest
-		case:
-			return .Snow
-		}
-	case t < HOT: // temperate
-		switch {
-		case m > 0.60:
-			return .DenseForest
-		case m > 0.40:
-			return .LightForest
-		case m > 0.22:
-			return .Grass
-		case:
-			return .Plains
-		}
-	case: // hot
-		switch {
-		case m > 0.62:
-			return .Jungle
-		case m > 0.45:
-			return .Savanna
-		case m > 0.28:
-			return .Grass
-		case m > 0.15:
-			return .Sand
-		case:
-			return .Dunes
-		}
-	}
-}
-
-
-// --- Rivers ---------------------------------------------------------------
-// Sources spawn on a coarse grid wherever elevation is high enough, then flow
-// downhill (steepest neighbor) until they hit the sea or a local minimum.
-// River hexes are stored globally; a chunk converts its land river-hexes to water.
-
-RIVER_SRC_CELL :: i32(18) // one candidate source per this many hexes
-RIVER_MAX_LEN :: i32(80) // max hexes a single river is traced
-RIVER_SOURCE_ELEV :: f64(0.45) // min elevation (raw fbm) for a source to spawn
-
-LAKE_MAX_TILES :: 500 // cap on a single lake/inland sea
-LAKE_REACH :: i32(24) // max hex distance a lake spreads from its terminus
-LAKE_DEPTH :: f64(0.05) // water rises this much above the terminus elevation
-
-// A river that could affect this chunk may start up to RIVER_MAX_LEN away and
-// then pool a lake reaching LAKE_REACH further, so search sources in that span.
-RIVER_REACH :: RIVER_MAX_LEN + LAKE_REACH
-
-river_tiles: map[Hex]bool // hexes that carry a river
-lake_tiles: map[Hex]bool // hexes that are lake/inland-sea water
-traced_sources: map[ChunkCoord]bool // source cells already evaluated
-
-// Integer hash (splitmix-ish) for deterministic source placement.
-hash_coord :: proc(x, y: i32, seed: i64) -> u64 {
-	h := u64(seed) * 0x9E3779B97F4A7C15
-	h ~= u64(u32(x)) * 0xFF51AFD7ED558CCD
-	h = (h << 31) | (h >> 33)
-	h ~= u64(u32(y)) * 0xC4CEB9FE1A85EC53
-	h ~= h >> 29
-	h *= 0xBF58476D1CE4E5B9
-	h ~= h >> 32
-	return h
-}
-
-source_for_cell :: proc(cx, cy: i32) -> Hex {
-	hsh := hash_coord(cx, cy, world_seed + 909)
-	q := cx * RIVER_SRC_CELL + i32(hsh % u64(RIVER_SRC_CELL))
-	r := cy * RIVER_SRC_CELL + i32((hsh / u64(RIVER_SRC_CELL)) % u64(RIVER_SRC_CELL))
-	return Hex{q, r, -q - r}
-}
-
-trace_river :: proc(source: Hex) {
-	h := source
-	for _ in 0 ..< RIVER_MAX_LEN {
-		e := elevation_at(hex_to_world(h, HEX_SIZE, ORIENT))
-		if e < SEA {
-			return // reached the sea
-		}
-		river_tiles[h] = true
-
-		best := h
-		best_e := e
-		for d in HEX_DIRS {
-			n := hex_add(h, d)
-			ne := elevation_at(hex_to_world(n, HEX_SIZE, ORIENT))
-			if ne < best_e {
-				best_e = ne
-				best = n
-			}
-		}
-		if best == h {
-			fill_lake(h, e) // local minimum: water pools into a lake
-			return
-		}
-		h = best
-	}
-}
-
-// Flood-fill a depression from its lowest point up to a fixed water level.
-// Bounded by tile count and reach so it stays deterministic and chunk-safe.
-fill_lake :: proc(start: Hex, terminus_e: f64) {
-	level := terminus_e + LAKE_DEPTH
-	frontier := make([dynamic]Hex, context.temp_allocator)
-	append(&frontier, start)
-	count := 0
-	for len(frontier) > 0 && count < LAKE_MAX_TILES {
-		h := pop(&frontier)
-		if h in lake_tiles {
-			continue
-		}
-		if hex_distance(h, start) > LAKE_REACH {
-			continue // keep extent bounded for chunk completeness
-		}
-		e := elevation_at(hex_to_world(h, HEX_SIZE, ORIENT))
-		if e < SEA || e > level {
-			continue // below: it's the ocean; above: it's the shore
-		}
-		lake_tiles[h] = true
-		count += 1
-		for d in HEX_DIRS {
-			append(&frontier, hex_add(h, d))
-		}
-	}
-}
-
-// Trace every source whose river could possibly reach this chunk, so a chunk's
-// rivers are complete no matter what order chunks are generated in.
-ensure_rivers_near :: proc(cc: ChunkCoord) {
-	cx_lo := floor_div(cc.x * CHUNK_SIZE - RIVER_REACH, RIVER_SRC_CELL)
-	cx_hi := floor_div(cc.x * CHUNK_SIZE + CHUNK_SIZE - 1 + RIVER_REACH, RIVER_SRC_CELL)
-	cy_lo := floor_div(cc.y * CHUNK_SIZE - RIVER_REACH, RIVER_SRC_CELL)
-	cy_hi := floor_div(cc.y * CHUNK_SIZE + CHUNK_SIZE - 1 + RIVER_REACH, RIVER_SRC_CELL)
-	for cy in cy_lo ..= cy_hi {
-		for cx in cx_lo ..= cx_hi {
-			key := ChunkCoord{cx, cy}
-			if key in traced_sources {
-				continue
-			}
-			traced_sources[key] = true
-			src := source_for_cell(cx, cy)
-			if elevation_at(hex_to_world(src, HEX_SIZE, ORIENT)) > RIVER_SOURCE_ELEV {
-				trace_river(src)
-			}
-		}
-	}
-}
-
-
-// --- Chunk cache ----------------------------------------------------------
-// biome_at does ~17 noise samples per tile, so we memoize results in chunks.
-// Each chunk is generated once on first touch and evicted after going unused.
-
-CHUNK_SIZE :: 16
-CHUNK_EVICT_AGE :: u64(180) // frames a chunk may go unused before eviction
-
-ChunkCoord :: [2]i32
-
-Chunk :: struct {
-	tiles:     [CHUNK_SIZE * CHUNK_SIZE]TILE_TYPE,
-	last_used: u64,
-}
-
-world_cache: map[ChunkCoord]^Chunk
-frame_counter: u64
-
-// Worldgen params last frame; a change invalidates the whole cache.
-prev_world_seed: i64
-prev_noise_freq: f64
-
-// Floored division/modulo so negative coords map correctly into chunks.
-floor_div :: proc(a, b: i32) -> i32 {
-	q := a / b
-	if a % b != 0 && (a < 0) != (b < 0) {
-		q -= 1
-	}
-	return q
-}
-floor_mod :: proc(a, b: i32) -> i32 {
-	m := a % b
-	if m != 0 && (m < 0) != (b < 0) {
-		m += b
-	}
-	return m
-}
-
-// Biome for a hex, served from the chunk cache (generating the chunk if needed).
-biome_cached :: proc(h: Hex) -> TILE_TYPE {
-	cc := ChunkCoord{floor_div(h[0], CHUNK_SIZE), floor_div(h[1], CHUNK_SIZE)}
-	chunk := world_cache[cc]
-	if chunk == nil {
-		chunk = new(Chunk)
-		ensure_rivers_near(cc) // make sure rivers crossing this chunk are traced
-		base_q := cc.x * CHUNK_SIZE
-		base_r := cc.y * CHUNK_SIZE
-		for ly in 0 ..< CHUNK_SIZE {
-			for lx in 0 ..< CHUNK_SIZE {
-				q := base_q + i32(lx)
-				r := base_r + i32(ly)
-				hh := Hex{q, r, -q - r}
-				b := biome_at(hex_to_world(hh, HEX_SIZE, ORIENT))
-				// Rivers and lakes turn land into water (not mountains or existing sea).
-				if hh in river_tiles || hh in lake_tiles {
-					#partial switch b {
-					case .DeepOcean, .Ocean, .Mountain:
-					// leave as-is
-					case:
-						b = .Ocean
-					}
-				}
-				chunk.tiles[ly * CHUNK_SIZE + lx] = b
-			}
-		}
-		world_cache[cc] = chunk
-	}
-	chunk.last_used = frame_counter
-	lx := floor_mod(h[0], CHUNK_SIZE)
-	ly := floor_mod(h[1], CHUNK_SIZE)
-	return chunk.tiles[ly * CHUNK_SIZE + lx]
-}
-
-// Drop everything (called when worldgen params change).
-world_cache_clear :: proc() {
-	for _, c in world_cache {
-		free(c)
-	}
-	clear(&world_cache)
-	clear(&river_tiles)
-	clear(&lake_tiles)
-	clear(&traced_sources)
-}
-
-// Free chunks that haven't been touched recently.
-world_cache_evict :: proc() {
-	stale := make([dynamic]ChunkCoord, context.temp_allocator)
-	for cc, c in world_cache {
-		if frame_counter - c.last_used > CHUNK_EVICT_AGE {
-			append(&stale, cc)
-		}
-	}
-	for cc in stale {
-		free(world_cache[cc])
-		delete_key(&world_cache, cc)
-	}
-}
-// --------------------------------------------------------------------------
-
-
 HexBounds :: struct {
 	q_min, q_max, r_min, r_max: i32,
 }
@@ -563,12 +178,13 @@ main :: proc() {
 	for step() {}
 	ui_shutdown()
 	expedition_shutdown()
+	world_shutdown()
 	k2.shutdown()
 }
 
 // --- Globe mode -----------------------------------------------------------
 // When zoomed far out, the flat hex plane is warped into an orthographic
-// "planet from orbit" illusion. It is purely cosmetic: an infinite plane can't
+// "planet from orbit" illusion. It is purely cosmetic: a flat plane can't
 // truly wrap into a sphere, so we show a circular cap and fade past the horizon.
 
 GLOBE_START :: f32(0.6) // zoom at which the globe begins forming
@@ -696,6 +312,10 @@ draw :: proc() {
 	k2.clear(color_lerp(sky_tint, SPACE_COLOR, t))
 
 	b := visible_hex_bounds(camera, HEX_SIZE, ORIENT)
+	// Clamp to the finite world so a zoomed-out globe view doesn't iterate
+	// (and skip) huge tracts of empty space beyond the world edge.
+	b.q_min = max(b.q_min, -WORLD_RADIUS);b.q_max = min(b.q_max, WORLD_RADIUS)
+	b.r_min = max(b.r_min, -WORLD_RADIUS);b.r_max = min(b.r_max, WORLD_RADIUS)
 
 	if t <= 0 {
 		// Fast flat path: let the camera transform handle world->screen.
@@ -704,8 +324,9 @@ draw :: proc() {
 		for r in b.r_min ..= b.r_max {
 			for q in b.q_min ..= b.q_max {
 				h := Hex{q, r, -q - r}
+				if !in_arena(h) do continue // outside the finite world: nothing to draw
 				center := hex_to_world(h, HEX_SIZE, ORIENT)
-				if in_arena(h) && !is_revealed(h) {
+				if !is_revealed(h) {
 					// Fogged tile: hide true biome.
 					k2.draw_circle(center, HEX_SIZE * 0.92, FOG_COLOR, 6)
 					if expedition.show_belief {
@@ -713,7 +334,7 @@ draw :: proc() {
 						k2.draw_circle(center, HEX_SIZE * 0.7, bc, 6)
 					}
 				} else {
-					k2.draw_texture_rect(hex_tex, tile_rect(biome_cached(h)), center, origin, 0, land_tint)
+					k2.draw_texture_rect(hex_tex, tile_rect(world_tile(h)), center, origin, 0, land_tint)
 				}
 			}
 		}
@@ -729,10 +350,11 @@ draw :: proc() {
 		for r in b.r_min ..= b.r_max {
 			for q in b.q_min ..= b.q_max {
 				h := Hex{q, r, -q - r}
+				if !in_arena(h) do continue // outside the finite world
 				center := hex_to_world(h, HEX_SIZE, ORIENT)
 				screen, scale, shade, vis := globe_project(center, t)
 				if !vis || scale <= 0 do continue
-				src := tile_rect(biome_cached(h))
+				src := tile_rect(world_tile(h))
 				dst := k2.Rect{screen.x, screen.y, SPRITE_W * scale, SPRITE_H * scale}
 				org := Vec2{SPRITE_W * scale * 0.5, SPRITE_H * scale * 0.5}
 				k2.draw_texture_fit(hex_tex, src, dst, org, 0, shade_color(shade))
@@ -742,7 +364,7 @@ draw :: proc() {
 	}
 
 	draw_hud()
-	ui_draw() // Clay UI spike overlay (toggle with [U])
+	ui_draw() // Clay UI overlay (toggle with [U])
 	k2.present()
 }
 
@@ -778,7 +400,6 @@ draw_clouds :: proc(mode, blend: f32) {
 }
 
 draw_hud :: proc() {
-	chunks := len(world_cache)
 	hover := world_to_hex(k2.screen_to_world(k2.get_mouse_position(), camera), HEX_SIZE, ORIENT)
 	belief_line := ""
 	if in_arena(hover) && !is_revealed(hover) {
@@ -802,7 +423,7 @@ draw_hud :: proc() {
 	)
 
 	info := fmt.tprintf(
-		"WAYFINDER PoC\n%s\n%s\ndays: %v  rations: %.1f\npath: %s\nbelief: %s\nseed: %v  zoom: %.2f  chunks: %v%s\n\n[click] goal  [Space] step  [Enter] play/pause\n[1/2/3] doctrine  [B] belief  [WASD] pan  [R] seed\n[U] UI  [F11] fullscreen",
+		"WAYFINDER PoC\n%s\n%s\ndays: %v  rations: %.1f\npath: %s\nbelief: %s\nseed: %v  zoom: %.2f%s\n\n[click] goal  [Space] step  [Enter] play/pause\n[1/2/3] doctrine  [B] belief  [WASD] pan  [R] seed\n[U] UI  [F11] fullscreen",
 		expedition.doctrine.name,
 		mode_line,
 		expedition.days_elapsed,
@@ -811,7 +432,6 @@ draw_hud :: proc() {
 		expedition.show_belief ? "ON" : "OFF",
 		world_seed,
 		camera.zoom,
-		chunks,
 		belief_line,
 	)
 	k2.draw_text(info, {9, 9}, 16, k2.BLACK)
@@ -861,7 +481,7 @@ handle_input :: proc() {
 		camera.target += before - after
 	}
 
-	// R: roll a new world seed.
+	// R: roll a new world seed (re-bakes the world in step()).
 	if k2.key_went_down(.R) {
 		world_seed = rand.int63()
 	}
@@ -894,7 +514,7 @@ handle_input :: proc() {
 		expedition.show_belief = !expedition.show_belief
 	}
 
-	// Clay UI spike overlay toggle.
+	// Clay UI overlay toggle.
 	if k2.key_went_down(.U) {
 		ui_show = !ui_show
 	}
@@ -926,20 +546,18 @@ step :: proc() -> bool {
 	if !k2.update() {
 		return false
 	}
-	frame_counter += 1
 	handle_input()
 	expedition_update(k2.get_frame_time())
 
-	// Worldgen params changed -> the cached tiles are stale.
+	// Worldgen params changed -> re-bake the finite world.
 	if world_seed != prev_world_seed || noise_freq != prev_noise_freq {
-		world_cache_clear()
+		bake_world()
 		prev_world_seed = world_seed
 		prev_noise_freq = noise_freq
 		expedition_reset_world()
 	}
 
 	draw()
-	world_cache_evict()
 
 	free_all(context.temp_allocator)
 	return true

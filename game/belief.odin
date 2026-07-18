@@ -27,11 +27,24 @@ belief_shutdown :: proc() {
 	beliefs = {}
 }
 
+// Uniform prior for a fogged tile with no nearby evidence: every terrain kind
+// equally likely, minimal confidence. Returned by belief_get for tiles outside
+// the computed frontier so expected-cost pathing stays sensible.
+belief_uniform :: proc() -> BeliefTile {
+	b: BeliefTile
+	u := f32(1) / f32(TERRAIN_KIND_COUNT)
+	for k in TerrainKind {
+		b.p[k] = u
+	}
+	b.confidence = 0.05
+	return b
+}
+
 belief_get :: proc(h: Hex) -> BeliefTile {
 	if b, ok := beliefs[h]; ok {
 		return b
 	}
-	return BeliefTile{}
+	return belief_uniform()
 }
 
 normalize_probs :: proc(p: ^[TerrainKind]f32) {
@@ -52,19 +65,26 @@ normalize_probs :: proc(p: ^[TerrainKind]f32) {
 	}
 }
 
-// Recompute beliefs for every fogged hex in the arena.
+// Recompute beliefs for every fogged tile within the regional radius of a
+// revealed tile - the explored "frontier". Fogged tiles with no revealed
+// evidence nearby fall back to the uniform prior (belief_get), so there's no
+// point storing them. This keeps cost proportional to explored area rather than
+// world size, which matters now that the world is large. (#10 will make this
+// fully incremental via a dirty set seeded by each reveal.)
 belief_recompute :: proc() {
 	clear(&beliefs)
-	origin := Hex{0, 0, 0}
-	for dq in -ARENA_RADIUS ..= ARENA_RADIUS {
-		r1 := max(-ARENA_RADIUS, -dq - ARENA_RADIUS)
-		r2 := min(ARENA_RADIUS, -dq + ARENA_RADIUS)
-		for dr in r1 ..= r2 {
-			h := Hex{origin[0] + dq, origin[1] + dr, -dq - dr}
-			if is_revealed(h) {
-				continue
+	R := BELIEF_REGIONAL_R
+	for rev in revealed {
+		for dq in -R ..= R {
+			r1 := max(-R, -dq - R)
+			r2 := min(R, -dq + R)
+			for dr in r1 ..= r2 {
+				h := Hex{rev[0] + dq, rev[1] + dr, -rev[0] - dq - rev[1] - dr}
+				if !in_arena(h) || is_revealed(h) || h in beliefs {
+					continue
+				}
+				beliefs[h] = infer_belief(h)
 			}
-			beliefs[h] = infer_belief(h)
 		}
 	}
 }
