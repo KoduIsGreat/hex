@@ -1,0 +1,5 @@
+# Odin build output. The executable is named after the source dir ("game.bin").
+# Note: vendored Clay libs (game/clay-odin/*.a, *.lib, *.o) are intentionally
+# NOT ignored - they are build dependencies.
+game.bin
+*.exe
