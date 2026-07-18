@@ -1,15 +1,13 @@
 package game
 
-// Clay -> karl2d integration spike.
+// Clay-based UI foundation: core frame lifecycle, renderer, and theme.
 //
-// Proves the layout library can drive this game's menus: it wires Clay's text
-// measurement to karl2d, renders Clay's output commands with karl2d primitives,
-// and builds a small three-panel mock (prep list + scrollable log + inspector)
-// exercising flex layout, text wrapping, scissor-clipped scrolling, and hover
-// hit-testing. Toggle with [U].
+// Clay computes layout + hit-testing and emits render commands; this module
+// draws those commands with karl2d and provides a widget layer (ui_widgets.odin)
+// and a dockable panel grammar (ui_panels.odin) on top. See docs/ui_design.md.
 //
-// This is a throwaway proof-of-concept, not the final UI framework (see the
-// "UI foundation" issue). Nothing here is wired into gameplay yet.
+// A widget gallery behind [U] exercises the toolkit. It is a dev aid, not a
+// game screen - the four-phase screens (issue #9) build on the same primitives.
 
 import "base:runtime"
 import "core:c"
@@ -21,10 +19,30 @@ ui_show: bool
 ui_ctx: runtime.Context
 ui_memory: []u8
 
+// --- Theme ----------------------------------------------------------------
+
+BG_PANEL :: clay.Color{20, 26, 40, 240}
+BG_CARD :: clay.Color{30, 38, 56, 255}
+BG_CARD_HOVER :: clay.Color{48, 62, 92, 255}
+BG_CARD_ALT :: clay.Color{26, 33, 49, 255}
+BG_TRACK :: clay.Color{40, 48, 66, 255}
+ACCENT :: clay.Color{235, 205, 120, 255}
+ACCENT_DIM :: clay.Color{200, 170, 90, 255}
+TEXT_HI :: clay.Color{235, 235, 220, 255}
+TEXT_LO :: clay.Color{170, 180, 195, 255}
+TEXT_DARK :: clay.Color{20, 20, 20, 255}
+BORDER_COL :: clay.Color{60, 72, 96, 255}
+
+text_cfg :: proc(size: u16, color: clay.Color) -> clay.TextElementConfig {
+	return {fontSize = size, textColor = color, wrapMode = .Words}
+}
+
 // Clay Color is RGBA floats in 0..255; karl2d Color is [4]u8.
 clay_color :: proc "contextless" (col: clay.Color) -> k2.Color {
 	return {u8(col[0]), u8(col[1]), u8(col[2]), u8(col[3])}
 }
+
+// --- Lifecycle ------------------------------------------------------------
 
 clay_error_handler :: proc "c" (err: clay.ErrorData) {
 	context = ui_ctx
@@ -32,7 +50,8 @@ clay_error_handler :: proc "c" (err: clay.ErrorData) {
 	fmt.eprintfln("clay error: %s", s)
 }
 
-// Clay hands us text + a font config and expects pixel dimensions back.
+// Clay hands us text + a font config and expects pixel dimensions back. It must
+// measure with the same font/size the renderer draws with, or wrapping drifts.
 clay_measure_text :: proc "c" (
 	text: clay.StringSlice,
 	config: ^clay.TextElementConfig,
@@ -58,203 +77,130 @@ ui_shutdown :: proc() {
 	delete(ui_memory)
 }
 
-// Feed Clay this frame's viewport + pointer + scroll, build the layout, and
-// draw the resulting render commands. Called in screen space (camera off).
+// Begin a UI frame: feed Clay the viewport + pointer + scroll, start the layout,
+// and open a full-screen root so floating elements (tooltips, menus) have a
+// parent. Widgets/panels are declared between ui_begin and ui_end.
+ui_begin :: proc() {
+	ss := k2.get_screen_size()
+	mouse := k2.get_mouse_position()
+	clay.SetLayoutDimensions({ss.x, ss.y})
+	clay.SetPointerState({mouse.x, mouse.y}, k2.mouse_button_is_held(.Left))
+	clay.UpdateScrollContainers(true, {0, k2.get_mouse_wheel_delta() * 40}, k2.get_frame_time())
+
+	clay.BeginLayout()
+	clay._OpenElementWithId(clay.ID("__root"))
+	clay.ConfigureOpenElement(
+		{layout = {sizing = {clay.SizingGrow({}), clay.SizingGrow({})}}},
+	)
+}
+
+// End a UI frame: render any queued tooltip inside the root, close the root, and
+// draw the resulting render commands (screen space; caller has camera off).
+ui_end :: proc() {
+	ui_tooltip_render()
+	clay._CloseElement()
+	cmds := clay.EndLayout(k2.get_frame_time())
+	ui_render(cmds)
+}
+
+// --- Gallery (behind [U]) -------------------------------------------------
+
+gal_tab: int
+gal_toggle: bool
+gal_slider: f32 = 0.5
+gal_dropdown: int
+
 ui_draw :: proc() {
 	if !ui_show {
 		return
 	}
-	ss := k2.get_screen_size()
-	mouse := k2.get_mouse_position()
-	dt := k2.get_frame_time()
-
-	clay.SetLayoutDimensions({ss.x, ss.y})
-	clay.SetPointerState({mouse.x, mouse.y}, k2.mouse_button_is_held(.Left))
-	clay.UpdateScrollContainers(true, {0, k2.get_mouse_wheel_delta() * 40}, dt)
-
-	cmds := ui_build()
-	ui_render(cmds)
+	ui_begin()
+	ui_gallery()
+	ui_end()
 }
 
-// --- Layout ---------------------------------------------------------------
+ui_gallery :: proc() {
+	// Root row: left controls panel + center scroll panel.
+	panel_begin(
+		"gal_row",
+		{sizing = {clay.SizingGrow({}), clay.SizingGrow({})}, padding = 16, gap = 16, row = true, transparent = true},
+	)
+	defer panel_end()
 
-BG_PANEL :: clay.Color{20, 26, 40, 240}
-BG_CARD :: clay.Color{30, 38, 56, 255}
-BG_CARD_HOVER :: clay.Color{48, 62, 92, 255}
-ACCENT :: clay.Color{235, 205, 120, 255}
-TEXT_HI :: clay.Color{235, 235, 220, 255}
-TEXT_LO :: clay.Color{170, 180, 195, 255}
-
-text_cfg :: proc(size: u16, color: clay.Color) -> clay.TextElementConfig {
-	return {fontSize = size, textColor = color, wrapMode = .Words}
-}
-
-ui_build :: proc() -> clay.ClayArray(clay.RenderCommand) {
-	clay.BeginLayout()
-
-	// Root: full-screen row, transparent so the map shows through the gaps.
-	if clay.UI(clay.ID("Root"))(
+	// Left: widget controls.
+	panel_begin("gal_left", {sizing = {clay.SizingFixed(320), clay.SizingGrow({})}, padding = 16, gap = 12})
 	{
-		layout = {
-			sizing = {clay.SizingGrow({}), clay.SizingGrow({})},
-			padding = clay.PaddingAll(16),
-			childGap = 16,
-			layoutDirection = .LeftToRight,
-		},
-	},
-	) {
-		ui_prep_panel()
-		ui_log_panel()
-		ui_inspector_panel()
-	}
+		clay.Text("UI FOUNDATION", text_cfg(22, ACCENT))
+		clay.Text("Clay widgets + panel grammar", text_cfg(13, TEXT_LO))
 
-	return clay.EndLayout(k2.get_frame_time())
-}
+		@(static) tab_labels := []string{"Widgets", "About"}
+		tabs("gal_tabs", tab_labels, &gal_tab)
 
-// Left: doctrine sections + a hover-highlighted Launch button.
-ui_prep_panel :: proc() {
-	if clay.UI(clay.ID("Prep"))(
-	{
-		layout = {
-			sizing = {clay.SizingFixed(300), clay.SizingGrow({})},
-			padding = clay.PaddingAll(16),
-			childGap = 10,
-			layoutDirection = .TopToBottom,
-		},
-		backgroundColor = BG_PANEL,
-		cornerRadius = clay.CornerRadiusAll(8),
-	},
-	) {
-		clay.Text("THE PREP TABLE", text_cfg(22, ACCENT))
-		clay.Text("Expedition programming", text_cfg(14, TEXT_LO))
-		ui_row("Route Intent", "Reach Objective")
-		ui_row("Terrain Profile", "Cautious Pathing")
-		ui_row("Risk Appetite", "Low Risk")
-		ui_row("Emergency", "Safe Return")
-		ui_row("Party", "Navigator, Surveyor")
-
-		// Spacer pushes the button to the bottom.
-		if clay.UI()({layout = {sizing = {clay.SizingGrow({}), clay.SizingGrow({})}}}) {}
-
-		launch_id := clay.ID("Launch")
-		hot := clay.PointerOver(launch_id)
-		if clay.UI(launch_id)(
-		{
-			layout = {
-				sizing = {clay.SizingGrow({}), clay.SizingFixed(44)},
-				childAlignment = {x = .Center, y = .Center},
-			},
-			backgroundColor = hot ? ACCENT : clay.Color{200, 170, 90, 255},
-			cornerRadius = clay.CornerRadiusAll(6),
-		},
-		) {
-			clay.Text("LAUNCH EXPEDITION", text_cfg(16, clay.Color{20, 20, 20, 255}))
+		if gal_tab == 0 {
+			if button("gal_btn", "Primary Button", {accent = true}) {
+				fmt.println("gallery: primary button clicked")
+			}
+			if button("gal_btn2", "Secondary Button") {
+				fmt.println("gallery: secondary button clicked")
+			}
+			toggle("gal_tog", "Belief overlay", &gal_toggle)
+			label_row("Slider", fmt.tprintf("%.2f", gal_slider))
+			slider("gal_slider", &gal_slider, 0, 1)
+			label_row("Dropdown", "route intent")
+			@(static) intents := []string{"Reach Objective", "Survey Region", "Artifact Hunt", "Resource Forage"}
+			dropdown("gal_dd", intents, &gal_dropdown)
+			if ui_hover_help("gal_help", "Hover me") {
+				ui_set_tooltip("Tooltips render as a floating element near the cursor.")
+			}
+		} else {
+			clay.Text(
+				"This gallery exercises the reusable widget layer over Clay: buttons, toggle, slider, dropdown, tabs, tooltip, and a scissor-clipped scroll list. The four-phase game screens reuse these same primitives.",
+				text_cfg(13, TEXT_LO),
+			)
 		}
 	}
-}
+	panel_end()
 
-// A label/value row that highlights on hover (proves per-element hit-testing).
-ui_row :: proc(label, value: string) {
-	if clay.UI()(
+	// Center: scrollable list (proves clipping + scroll wheel).
+	panel_begin("gal_center", {sizing = {clay.SizingGrow({}), clay.SizingGrow({})}, padding = 16, gap = 10})
 	{
-		layout = {
-			sizing = {clay.SizingGrow({}), clay.SizingFit({})},
-			padding = clay.PaddingAll(10),
-			childGap = 8,
-			layoutDirection = .TopToBottom,
-		},
-		backgroundColor = clay.Hovered() ? BG_CARD_HOVER : BG_CARD,
-		cornerRadius = clay.CornerRadiusAll(5),
-	},
-	) {
-		clay.Text(label, text_cfg(12, TEXT_LO))
-		clay.Text(value, text_cfg(16, TEXT_HI))
-	}
-}
-
-// Center: a scrollable, scissor-clipped decision log (proves clipping + scroll).
-ui_log_panel :: proc() {
-	if clay.UI(clay.ID("LogPanel"))(
-	{
-		layout = {
-			sizing = {clay.SizingGrow({}), clay.SizingGrow({})},
-			padding = clay.PaddingAll(16),
-			childGap = 10,
-			layoutDirection = .TopToBottom,
-		},
-		backgroundColor = BG_PANEL,
-		cornerRadius = clay.CornerRadiusAll(8),
-	},
-	) {
-		clay.Text("EXPEDITION LOG", text_cfg(22, ACCENT))
-		if clay.UI(clay.ID("LogScroll"))(
-		{
-			layout = {
-				sizing = {clay.SizingGrow({}), clay.SizingGrow({})},
-				childGap = 6,
-				layoutDirection = .TopToBottom,
+		clay.Text("SCROLL LIST", text_cfg(22, ACCENT))
+		scroll_begin("gal_scroll")
+		for i in 0 ..< 40 {
+			row_id := fmt.tprintf("gal_item_%d", i)
+			if clay.UI(clay.ID(row_id))(
+			{
+				layout = {sizing = {clay.SizingGrow({}), clay.SizingFit({})}, padding = clay.PaddingAll(8)},
+				backgroundColor = clay.Hovered() ? BG_CARD_HOVER : (i % 2 == 0 ? BG_CARD : BG_CARD_ALT),
+				cornerRadius = clay.CornerRadiusAll(4),
 			},
-			clip = {vertical = true, childOffset = clay.GetScrollOffset()},
-		},
-		) {
-			lines := []string {
-				"Day 1  ToGoal      chose Plains over Forest (cost 1.0 < 2.0)",
-				"Day 2  ToGoal      revealed 7 tiles, belief updated",
-				"Day 3  ToGoal      P(Mountain) 0.62 ahead - skirting",
-				"Day 4  Revealing   SmartReveal: climb hill (attempt 1/3)",
-				"Day 5  ToGoal      resumed, path 8.4 days",
-				"Day 6  Foraging    rations 9.0 < danger 10 -> forest",
-				"Day 7  Foraging    foraged +6 rations (now 14.0)",
-				"Day 8  ToGoal      belief confidence 0.71, low-risk OK",
-				"Day 9  ToGoal      impasse: swamp basin, detour 4 days",
-				"Day 10 Returning   SafeReturn: rations 12.0 <= return 11.4",
-				"Day 11 Returning   crossing known territory",
-				"Day 12 Returning   arrived home - run ended",
-			}
-			for line, i in lines {
-				if clay.UI()(
-				{
-					layout = {
-						sizing = {clay.SizingGrow({}), clay.SizingFit({})},
-						padding = clay.PaddingAll(8),
-					},
-					backgroundColor = clay.Hovered() ? BG_CARD_HOVER : (i % 2 == 0 ? BG_CARD : clay.Color{26, 33, 49, 255}),
-					cornerRadius = clay.CornerRadiusAll(4),
-				},
-				) {
-					clay.Text(line, text_cfg(13, TEXT_HI))
-				}
+			) {
+				clay.Text(fmt.tprintf("Item %d - hover to highlight, wheel to scroll", i), text_cfg(13, TEXT_HI))
 			}
 		}
+		scroll_end()
 	}
-}
-
-// Right: a fixed inspector with a wrapped paragraph (proves text wrapping).
-ui_inspector_panel :: proc() {
-	if clay.UI(clay.ID("Inspector"))(
-	{
-		layout = {
-			sizing = {clay.SizingFixed(280), clay.SizingGrow({})},
-			padding = clay.PaddingAll(16),
-			childGap = 10,
-			layoutDirection = .TopToBottom,
-		},
-		backgroundColor = BG_PANEL,
-		cornerRadius = clay.CornerRadiusAll(8),
-	},
-	) {
-		clay.Text("TILE INSPECTOR", text_cfg(22, ACCENT))
-		ui_row("Terrain", "Fog")
-		ui_row("Belief (argmax)", "Desert 62%")
-		ui_row("Confidence", "71%")
-		clay.Text(
-			"Contribution: local neighbours raise P(Desert); regional density and shape continuity extend the basin north-east. Directional alignment is weak here.",
-			text_cfg(13, TEXT_LO),
-		)
-	}
+	panel_end()
 }
 
 // --- Render ---------------------------------------------------------------
+
+// karl2d draws sharp rects; approximate Clay's rounded corners with an inset
+// cross of rects plus a filled circle at each corner.
+draw_round_rect :: proc(r: k2.Rect, radius: f32, color: k2.Color) {
+	rad := min(radius, min(r.w, r.h) * 0.5)
+	if rad <= 1 {
+		k2.draw_rect(r, color)
+		return
+	}
+	k2.draw_rect({r.x + rad, r.y, r.w - 2 * rad, r.h}, color)
+	k2.draw_rect({r.x, r.y + rad, r.w, r.h - 2 * rad}, color)
+	SEG :: 10
+	k2.draw_circle({r.x + rad, r.y + rad}, rad, color, SEG)
+	k2.draw_circle({r.x + r.w - rad, r.y + rad}, rad, color, SEG)
+	k2.draw_circle({r.x + rad, r.y + r.h - rad}, rad, color, SEG)
+	k2.draw_circle({r.x + r.w - rad, r.y + r.h - rad}, rad, color, SEG)
+}
 
 ui_render :: proc(cmds: clay.ClayArray(clay.RenderCommand)) {
 	cmds := cmds
@@ -265,7 +211,8 @@ ui_render :: proc(cmds: clay.ClayArray(clay.RenderCommand)) {
 
 		#partial switch cmd.commandType {
 		case .Rectangle:
-			k2.draw_rect(rect, clay_color(cmd.renderData.rectangle.backgroundColor))
+			rd := cmd.renderData.rectangle
+			draw_round_rect(rect, rd.cornerRadius.topLeft, clay_color(rd.backgroundColor))
 		case .Border:
 			b := cmd.renderData.border
 			k2.draw_rect_outline(rect, f32(max(b.width.left, 1)), clay_color(b.color))
