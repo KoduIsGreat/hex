@@ -10,6 +10,7 @@ import k2 "karl2d"
 hex_tex: k2.Texture
 cloud_shader: k2.Shader
 camera: k2.Camera
+fullscreen: bool
 
 // Mutable worldgen params (tweakable at runtime).
 world_seed := i64(447198347)
@@ -74,7 +75,7 @@ TILE_TYPE :: enum u8 {
 
 
 init :: proc() {
-	k2.init(1280, 720, "Wayfinder PoC")
+	k2.init(1280, 720, "Wayfinder PoC", {window_mode = .Windowed_Resizable})
 	hex_tex = k2.load_texture_from_bytes(#load("../assets/hex.png"))
 	cloud_shader = k2.load_shader_from_bytes(#load("clouds.vert"), #load("clouds.frag"))
 	fmt.printfln("hex h=%v w=%v", hex_tex.height, hex_tex.width)
@@ -90,6 +91,7 @@ init :: proc() {
 	prev_world_seed = world_seed
 	prev_noise_freq = noise_freq
 	expedition_init()
+	ui_init()
 }
 
 
@@ -559,6 +561,7 @@ visible_hex_bounds :: proc(c: k2.Camera, size: f32, orient: Orientation) -> HexB
 main :: proc() {
 	init()
 	for step() {}
+	ui_shutdown()
 	expedition_shutdown()
 	k2.shutdown()
 }
@@ -739,6 +742,7 @@ draw :: proc() {
 	}
 
 	draw_hud()
+	ui_draw() // Clay UI spike overlay (toggle with [U])
 	k2.present()
 }
 
@@ -798,7 +802,7 @@ draw_hud :: proc() {
 	)
 
 	info := fmt.tprintf(
-		"WAYFINDER PoC\n%s\n%s\ndays: %v  rations: %.1f\npath: %s\nbelief: %s\nseed: %v  zoom: %.2f  chunks: %v%s\n\n[click] goal  [Space] step  [Enter] play/pause\n[1/2/3] doctrine  [B] belief  [WASD] pan  [R] seed",
+		"WAYFINDER PoC\n%s\n%s\ndays: %v  rations: %.1f\npath: %s\nbelief: %s\nseed: %v  zoom: %.2f  chunks: %v%s\n\n[click] goal  [Space] step  [Enter] play/pause\n[1/2/3] doctrine  [B] belief  [WASD] pan  [R] seed\n[U] UI  [F11] fullscreen",
 		expedition.doctrine.name,
 		mode_line,
 		expedition.days_elapsed,
@@ -888,6 +892,17 @@ handle_input :: proc() {
 	// Belief overlay toggle.
 	if k2.key_went_down(.B) {
 		expedition.show_belief = !expedition.show_belief
+	}
+
+	// Clay UI spike overlay toggle.
+	if k2.key_went_down(.U) {
+		ui_show = !ui_show
+	}
+
+	// Fullscreen toggle (borderless <-> resizable windowed).
+	if k2.key_went_down(.F11) {
+		fullscreen = !fullscreen
+		k2.set_window_mode(fullscreen ? .Borderless_Fullscreen : .Windowed_Resizable)
 	}
 
 	// Single step / play-pause.
