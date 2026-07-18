@@ -85,12 +85,17 @@ simulate_run :: proc(start, goal: Hex, doctrine: Doctrine) -> RunResult {
 	r.start = start
 	r.goal = goal
 
-	// Snapshot what was known before the run, for playback reconstruction.
+	// Base the run on the persistent known world (playback may have left the
+	// display buffer `revealed` rewound to a cursor), and snapshot it so
+	// playback can reconstruct any day's fog.
+	clear(&revealed)
 	sr := make([dynamic]Hex)
-	for h in revealed {
+	for h in world_revealed {
+		revealed[h] = true
 		append(&sr, h)
 	}
 	r.start_revealed = sr[:]
+	belief_recompute()
 
 	// Reset run state to a fresh expedition from `start`.
 	expedition.doctrine = doctrine
@@ -178,6 +183,11 @@ simulate_run :: proc(start, goal: Hex, doctrine: Doctrine) -> RunResult {
 	}
 
 	r.outcome = run_classify(stuck)
+
+	// Discoveries are permanent: fold them into the persistent known world and
+	// save (GDD §2). Playback afterward only rewinds the display buffer.
+	world_revealed_commit(&r)
+	society_save()
 	return r
 }
 

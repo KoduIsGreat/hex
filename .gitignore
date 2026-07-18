@@ -3,3 +3,6 @@
 # NOT ignored - they are build dependencies.
 game.bin
 *.exe
+
+# Local save file written at runtime.
+wayfinder_save.json

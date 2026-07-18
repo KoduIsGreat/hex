@@ -87,10 +87,31 @@ init :: proc() {
 		offset = k2.get_screen_size() * 0.5,
 		zoom   = 1,
 	}
+
+	// Load a save (if any) before baking, so the world uses the saved seed.
+	soc, loaded := society_load()
+	if loaded {
+		world_seed = soc.seed
+		noise_freq = soc.noise_freq
+		prestige = soc.prestige
+		funding = soc.funding
+	}
+
 	world_init()
 	prev_world_seed = world_seed
 	prev_noise_freq = noise_freq
-	expedition_init()
+	expedition_init() // reveals home into `revealed`, sets up run state
+
+	if loaded {
+		// Restore the accumulated known world on top of the home reveal.
+		for h in soc.revealed {
+			revealed[Hex(h)] = true
+		}
+		belief_recompute()
+		delete(soc.revealed)
+	}
+	world_revealed_reset() // persistent known world := current revealed
+
 	ui_init()
 }
 
@@ -176,6 +197,7 @@ visible_hex_bounds :: proc(c: k2.Camera, size: f32, orient: Orientation) -> HexB
 main :: proc() {
 	init()
 	for step() {}
+	society_save() // persist the accumulated known world on quit
 	run_clear()
 	ui_shutdown()
 	expedition_shutdown()

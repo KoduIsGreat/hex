@@ -17,17 +17,21 @@ fog_init :: proc() {
 	if revealed == nil {
 		revealed = make(map[Hex]bool)
 		newly_revealed = make([dynamic]Hex)
+		world_revealed = make(map[Hex]bool)
 	} else {
 		clear(&revealed)
 		clear(&newly_revealed)
+		clear(&world_revealed)
 	}
 }
 
 fog_shutdown :: proc() {
 	delete(revealed)
 	delete(newly_revealed)
+	delete(world_revealed)
 	revealed = {}
 	newly_revealed = {}
+	world_revealed = {}
 }
 
 // Begin a reveal batch: clears the newly-revealed accumulator.

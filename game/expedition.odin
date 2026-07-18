@@ -81,6 +81,7 @@ expedition_reset_world :: proc() {
 	reveal_around(expedition.explorer.hex, START_VISION)
 	reveal_from_tile(expedition.explorer.hex)
 	belief_recompute()
+	world_revealed_reset() // new world -> persistent known world resets to the home area
 	expedition_set_status("World regenerated. Click a goal.")
 }
 
