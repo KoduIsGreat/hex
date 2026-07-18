@@ -144,7 +144,6 @@ simulate_run :: proc(start, goal: Hex, doctrine: Doctrine) -> RunResult {
 		c0 := decision_trace.count
 		cont := expedition_step()
 		if expedition.days_elapsed > prev_day {
-			reason := decision_trace.count > c0 ? trace_latest_reason() : ""
 			append(
 				&r.days,
 				DayResult {
@@ -153,7 +152,7 @@ simulate_run :: proc(start, goal: Hex, doctrine: Doctrine) -> RunResult {
 					mode = expedition.mode,
 					rations = expedition.rations,
 					revealed_delta = clone_hexes(newly_revealed[:]),
-					reason = strings.clone(reason),
+					reason = trace_since(c0), // full day's decisions (policy + move)
 				},
 			)
 			stall = 0

@@ -43,6 +43,7 @@ do_launch :: proc() {
 		return
 	}
 	launch_run() // precompute + start playback
+	expedition.show_belief = true // show what the explorer believed each day
 	game_phase = .Simulation
 }
 
@@ -207,6 +208,9 @@ panel_sim :: proc() {
 		playback_step(1)
 	}
 	panel_end()
+
+	// Belief overlay reflects what the explorer believed as of the shown day.
+	toggle("sim_belief", "Belief overlay (this day)", &expedition.show_belief)
 
 	// This day's decision - updates as playback advances so you can follow why
 	// the explorer moved where it did, day by day.

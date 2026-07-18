@@ -1,6 +1,7 @@
 package game
 
 import "core:fmt"
+import "core:strings"
 
 TRACE_CAP :: 32
 TRACE_REASON_LEN :: 96
@@ -59,14 +60,39 @@ trace_recent :: proc(n: int, allocator := context.temp_allocator) -> []TraceEntr
 	return out
 }
 
-// Reason text of the most recently appended trace entry ("" if none). Used to
-// capture a per-day decision summary during run precompute.
+// Reason text of the most recently appended trace entry ("" if none).
 trace_latest_reason :: proc() -> string {
 	if decision_trace.count == 0 {
 		return ""
 	}
 	idx := (decision_trace.head - 1 + TRACE_CAP) % TRACE_CAP
 	return trace_reason(&decision_trace.entries[idx])
+}
+
+// Join every trace reason appended since count `c0` into one allocated string
+// (bounded by the ring capacity). Used to capture a full day's decisions -
+// policy events plus the movement rationale - during run precompute.
+trace_since :: proc(c0: int, allocator := context.allocator) -> string {
+	n := decision_trace.count - c0
+	if n <= 0 {
+		return ""
+	}
+	if n > TRACE_CAP {
+		n = TRACE_CAP
+	}
+	b := strings.builder_make(allocator)
+	for i in 0 ..< n {
+		idx := decision_trace.head - n + i
+		for idx < 0 {
+			idx += TRACE_CAP
+		}
+		idx %= TRACE_CAP
+		if i > 0 {
+			strings.write_string(&b, "  |  ")
+		}
+		strings.write_string(&b, trace_reason(&decision_trace.entries[idx]))
+	}
+	return strings.to_string(b)
 }
 
 mission_mode_name :: proc(m: MissionMode) -> string {

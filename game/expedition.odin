@@ -149,6 +149,62 @@ expedition_repath :: proc() {
 	}
 }
 
+// A short rationale for stepping onto `next`: the chosen tile's expected cost
+// versus the cheapest alternative neighbor (the "chose A over B" of GDD §7.5).
+movement_reason :: proc(cur, next: Hex, doctrine: Doctrine) -> string {
+	ka, conf_a := dominant_terrain(next)
+	cost_a := edge_cost(cur, next, doctrine)
+
+	// Cheapest alternative neighbor we could have stepped to instead.
+	best_alt: Hex
+	best_cost: f32 = 1e18
+	have_alt := false
+	for d in HEX_DIRS {
+		n := hex_add(cur, d)
+		if n == next || !in_arena(n) {
+			continue
+		}
+		if is_revealed(n) && !is_passable(terrain_at(n)) {
+			continue
+		}
+		c := edge_cost(cur, n, doctrine)
+		if c < best_cost {
+			best_cost = c
+			best_alt = n
+			have_alt = true
+		}
+	}
+
+	// If stepping onto a fogged tile, the decision rests on belief confidence.
+	conf := is_revealed(next) ? "" : fmt.tprintf(" [belief %.0f%%]", conf_a * 100)
+
+	if have_alt {
+		kb, _ := dominant_terrain(best_alt)
+		if cost_a > best_cost + 0.1 {
+			// Chose a locally costlier tile because it lies on the better route.
+			return fmt.tprintf(
+				"Took %s (cost %.1f) over cheaper %s (cost %.1f) for a better route%s",
+				terrain_name(ka),
+				cost_a,
+				terrain_name(kb),
+				best_cost,
+				conf,
+			)
+		}
+		if kb != ka {
+			return fmt.tprintf(
+				"Chose %s (cost %.1f) over %s (cost %.1f)%s",
+				terrain_name(ka),
+				cost_a,
+				terrain_name(kb),
+				best_cost,
+				conf,
+			)
+		}
+	}
+	return fmt.tprintf("Advanced to %s (cost %.1f) on the lowest-cost path%s", terrain_name(ka), cost_a, conf)
+}
+
 // Advance one day along the current path, evaluating policies first.
 expedition_step :: proc() -> bool {
 	if expedition.run_over {
@@ -199,6 +255,9 @@ expedition_step :: proc() -> bool {
 	}
 
 	next := expedition.path.path[expedition.path_index + 1]
+	// Log why we step here (using belief as it stands before revealing `next`).
+	cur := expedition.explorer.hex
+	move_reason := movement_reason(cur, next, expedition.doctrine)
 	expedition.explorer.hex = next
 	expedition.explorer.pos = hex_to_world(next, HEX_SIZE, ORIENT)
 	expedition.path_index += 1
@@ -210,6 +269,7 @@ expedition_step :: proc() -> bool {
 
 	pay := true_day_cost(next)
 	expedition.rations -= pay
+	trace_append(expedition.days_elapsed, expedition.mode, "%s", move_reason)
 
 	active, _ := active_goal()
 	if expedition.explorer.hex == active {
