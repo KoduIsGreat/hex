@@ -15,7 +15,7 @@ import "core:fmt"
 import clay "clay-odin"
 import k2 "karl2d"
 
-ui_show: bool
+ui_show := true // phase UI visible by default; [U] toggles to the debug HUD
 ui_ctx: runtime.Context
 ui_memory: []u8
 
@@ -105,82 +105,14 @@ ui_end :: proc() {
 
 // --- Gallery (behind [U]) -------------------------------------------------
 
-gal_tab: int
-gal_toggle: bool
-gal_slider: f32 = 0.5
-gal_dropdown: int
-
+// Draw the phase UI (see phases.odin). Toggle off with [U] for a clean map.
 ui_draw :: proc() {
 	if !ui_show {
 		return
 	}
 	ui_begin()
-	ui_gallery()
+	game_ui()
 	ui_end()
-}
-
-ui_gallery :: proc() {
-	// Root row: left controls panel + center scroll panel.
-	panel_begin(
-		"gal_row",
-		{sizing = {clay.SizingGrow({}), clay.SizingGrow({})}, padding = 16, gap = 16, row = true, transparent = true},
-	)
-	defer panel_end()
-
-	// Left: widget controls.
-	panel_begin("gal_left", {sizing = {clay.SizingFixed(320), clay.SizingGrow({})}, padding = 16, gap = 12})
-	{
-		clay.Text("UI FOUNDATION", text_cfg(22, ACCENT))
-		clay.Text("Clay widgets + panel grammar", text_cfg(13, TEXT_LO))
-
-		@(static) tab_labels := []string{"Widgets", "About"}
-		tabs("gal_tabs", tab_labels, &gal_tab)
-
-		if gal_tab == 0 {
-			if button("gal_btn", "Primary Button", {accent = true}) {
-				fmt.println("gallery: primary button clicked")
-			}
-			if button("gal_btn2", "Secondary Button") {
-				fmt.println("gallery: secondary button clicked")
-			}
-			toggle("gal_tog", "Belief overlay", &gal_toggle)
-			label_row("Slider", fmt.tprintf("%.2f", gal_slider))
-			slider("gal_slider", &gal_slider, 0, 1)
-			label_row("Dropdown", "route intent")
-			@(static) intents := []string{"Reach Objective", "Survey Region", "Artifact Hunt", "Resource Forage"}
-			dropdown("gal_dd", intents, &gal_dropdown)
-			if ui_hover_help("gal_help", "Hover me") {
-				ui_set_tooltip("Tooltips render as a floating element near the cursor.")
-			}
-		} else {
-			clay.Text(
-				"This gallery exercises the reusable widget layer over Clay: buttons, toggle, slider, dropdown, tabs, tooltip, and a scissor-clipped scroll list. The four-phase game screens reuse these same primitives.",
-				text_cfg(13, TEXT_LO),
-			)
-		}
-	}
-	panel_end()
-
-	// Center: scrollable list (proves clipping + scroll wheel).
-	panel_begin("gal_center", {sizing = {clay.SizingGrow({}), clay.SizingGrow({})}, padding = 16, gap = 10})
-	{
-		clay.Text("SCROLL LIST", text_cfg(22, ACCENT))
-		scroll_begin("gal_scroll")
-		for i in 0 ..< 40 {
-			row_id := fmt.tprintf("gal_item_%d", i)
-			if clay.UI(clay.ID(row_id))(
-			{
-				layout = {sizing = {clay.SizingGrow({}), clay.SizingFit({})}, padding = clay.PaddingAll(8)},
-				backgroundColor = clay.Hovered() ? BG_CARD_HOVER : (i % 2 == 0 ? BG_CARD : BG_CARD_ALT),
-				cornerRadius = clay.CornerRadiusAll(4),
-			},
-			) {
-				clay.Text(fmt.tprintf("Item %d - hover to highlight, wheel to scroll", i), text_cfg(13, TEXT_HI))
-			}
-		}
-		scroll_end()
-	}
-	panel_end()
 }
 
 // --- Render ---------------------------------------------------------------

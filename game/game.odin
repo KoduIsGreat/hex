@@ -390,8 +390,11 @@ draw :: proc() {
 		draw_clouds(0, t)
 	}
 
-	draw_hud()
-	ui_draw() // Clay UI overlay (toggle with [U])
+	if ui_show {
+		ui_draw() // phase UI (Map Room / Prep / Simulation / Analysis)
+	} else {
+		draw_hud() // debug HUD fallback
+	}
 	k2.present()
 }
 
@@ -536,16 +539,10 @@ handle_input :: proc() {
 	}
 	noise_freq = clamp(noise_freq, NOISE_FREQ_MIN, NOISE_FREQ_MAX)
 
-	// Doctrine presets.
-	if k2.key_went_down(.N1) {
-		expedition_set_doctrine(doctrine_cautious())
-	}
-	if k2.key_went_down(.N2) {
-		expedition_set_doctrine(doctrine_aggressive_surveyor())
-	}
-	if k2.key_went_down(.N3) {
-		expedition_set_doctrine(doctrine_opportunistic_forager())
-	}
+	// Doctrine presets (also sync the Prep terrain-profile tabs).
+	if k2.key_went_down(.N1) do apply_profile(0)
+	if k2.key_went_down(.N2) do apply_profile(1)
+	if k2.key_went_down(.N3) do apply_profile(2)
 
 	// Belief overlay toggle.
 	if k2.key_went_down(.B) {
@@ -563,31 +560,25 @@ handle_input :: proc() {
 		k2.set_window_mode(fullscreen ? .Borderless_Fullscreen : .Windowed_Resizable)
 	}
 
-	// Enter: launch a run (precompute + play), or pause/resume playback.
+	// Enter: the current phase's primary action.
 	if k2.key_went_down(.Enter) {
-		if run_active {
-			playback_toggle()
-		} else {
-			launch_run()
+		#partial switch game_phase {
+		case .Prep:
+			do_launch()
+		case .Simulation:
+			if run_active do playback_toggle()
 		}
 	}
-	// Space: step the playback cursor forward a day (launches paused if needed).
-	if k2.key_went_down(.Space) {
-		if run_active {
-			playback_step(1)
-		} else {
-			launch_run()
-			playback.playing = false
-		}
+	// Playback scrubbing (Simulation only).
+	if game_phase == .Simulation {
+		if k2.key_went_down(.Space) do playback_step(1)
+		if k2.key_went_down(.Right) do playback_step(1)
+		if k2.key_went_down(.Left) do playback_step(-1)
 	}
-	// Left/Right: scrub the playback timeline.
-	if run_active && k2.key_went_down(.Right) do playback_step(1)
-	if run_active && k2.key_went_down(.Left) do playback_step(-1)
 
-	// Left click: set pathfinding goal (cancels any precomputed run).
-	if k2.mouse_button_went_down(.Left) && globe_blend() <= 0 {
+	// Left click in Prep sets the goal (ignored when over a UI panel).
+	if game_phase == .Prep && k2.mouse_button_went_down(.Left) && globe_blend() <= 0 && !ui_over_panel() {
 		goal := world_to_hex(k2.screen_to_world(k2.get_mouse_position(), camera), HEX_SIZE, ORIENT)
-		run_clear()
 		expedition_set_goal(goal)
 	}
 }
@@ -606,6 +597,7 @@ step :: proc() -> bool {
 		prev_noise_freq = noise_freq
 		run_clear()
 		expedition_reset_world()
+		game_phase = .MapRoom
 	}
 
 	draw()
