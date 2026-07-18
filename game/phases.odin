@@ -229,13 +229,12 @@ panel_sim :: proc() {
 		clay.Text(cur_reason == "" ? "(moved without a logged decision)" : cur_reason, text_cfg(14, TEXT_HI))
 	}
 
-	// Running decision log up to the current day; the current day is highlighted.
+	// Running decision log up to the current day, newest first (so the latest
+	// decision is always at the top without scrolling); the current day is highlighted.
 	clay.Text("Decision log", text_cfg(12, TEXT_LO))
 	scroll_begin("sim_log")
-	for i in 0 ..= playback.cursor {
-		if i >= len(run_result.days) {
-			break
-		}
+	hi := min(playback.cursor, len(run_result.days) - 1)
+	for i := hi; i >= 0; i -= 1 {
 		d := run_result.days[i]
 		if d.reason == "" {
 			continue
@@ -270,9 +269,10 @@ panel_analysis :: proc() {
 		label_row("Rations left", fmt.tprintf("%.1f", run_result.days[last].rations))
 	}
 
+	// Newest day first so the latest decisions are at the top of the feed.
 	clay.Text("Decision trace", text_cfg(12, TEXT_LO))
 	scroll_begin("an_log")
-	for d, i in run_result.days {
+	#reverse for d, i in run_result.days {
 		if d.reason == "" {
 			continue
 		}
