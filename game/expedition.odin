@@ -223,17 +223,9 @@ expedition_step :: proc() -> bool {
 
 STEP_INTERVAL :: f32(0.25)
 
+// Live stepping is now driven by playback of a precomputed run (see run.odin).
 expedition_update :: proc(dt: f32) {
-	if !expedition.playing {
-		return
-	}
-	expedition.step_timer -= dt
-	if expedition.step_timer <= 0 {
-		expedition.step_timer = STEP_INTERVAL
-		if !expedition_step() {
-			expedition.playing = false
-		}
-	}
+	playback_update(dt)
 }
 
 draw_hex_overlay :: proc(h: Hex, color: k2.Color, radius_scale: f32 = 0.85) {

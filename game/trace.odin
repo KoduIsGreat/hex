@@ -59,6 +59,16 @@ trace_recent :: proc(n: int, allocator := context.temp_allocator) -> []TraceEntr
 	return out
 }
 
+// Reason text of the most recently appended trace entry ("" if none). Used to
+// capture a per-day decision summary during run precompute.
+trace_latest_reason :: proc() -> string {
+	if decision_trace.count == 0 {
+		return ""
+	}
+	idx := (decision_trace.head - 1 + TRACE_CAP) % TRACE_CAP
+	return trace_reason(&decision_trace.entries[idx])
+}
+
 mission_mode_name :: proc(m: MissionMode) -> string {
 	switch m {
 	case .ToGoal:

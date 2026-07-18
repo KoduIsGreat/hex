@@ -176,6 +176,7 @@ visible_hex_bounds :: proc(c: k2.Camera, size: f32, orient: Orientation) -> HexB
 main :: proc() {
 	init()
 	for step() {}
+	run_clear()
 	ui_shutdown()
 	expedition_shutdown()
 	world_shutdown()
@@ -338,7 +339,11 @@ draw :: proc() {
 				}
 			}
 		}
-		expedition_draw_overlays()
+		if run_active {
+			playback_draw_overlays()
+		} else {
+			expedition_draw_overlays()
+		}
 		k2.set_camera(nil)
 		draw_clouds(1, 1) // drifting cloud shadows on the terrain
 	} else {
@@ -422,13 +427,23 @@ draw_hud :: proc() {
 		expedition.doctrine.max_reveal_attempts,
 	)
 
+	run_line := expedition.path.found ? fmt.tprintf("%.1f days (preview)", expedition.path.cost) : "none"
+	if run_active {
+		run_line = fmt.tprintf(
+			"day %v/%v  %s",
+			playback.cursor,
+			len(run_result.days) - 1,
+			run_outcome_name(run_result.outcome),
+		)
+	}
+
 	info := fmt.tprintf(
-		"WAYFINDER PoC\n%s\n%s\ndays: %v  rations: %.1f\npath: %s\nbelief: %s  upd: %v\nseed: %v  zoom: %.2f%s\n\n[click] goal  [Space] step  [Enter] play/pause\n[1/2/3] doctrine  [B] belief  [WASD] pan  [R] seed\n[U] UI  [F11] fullscreen",
+		"WAYFINDER PoC\n%s\n%s\ndays: %v  rations: %.1f\nrun: %s\nbelief: %s  upd: %v\nseed: %v  zoom: %.2f%s\n\n[click] goal  [Enter] launch/pause  [Space /<->] scrub\n[1/2/3] doctrine  [B] belief  [WASD] pan  [R] seed\n[U] UI  [F11] fullscreen",
 		expedition.doctrine.name,
 		mode_line,
 		expedition.days_elapsed,
 		expedition.rations,
-		expedition.path.found ? fmt.tprintf("%.1f days", expedition.path.cost) : "none",
+		run_line,
 		expedition.show_belief ? "ON" : "OFF",
 		belief_dirty_count,
 		world_seed,
@@ -526,19 +541,31 @@ handle_input :: proc() {
 		k2.set_window_mode(fullscreen ? .Borderless_Fullscreen : .Windowed_Resizable)
 	}
 
-	// Single step / play-pause.
-	if k2.key_went_down(.Space) {
-		expedition.playing = false
-		expedition_step()
-	}
+	// Enter: launch a run (precompute + play), or pause/resume playback.
 	if k2.key_went_down(.Enter) {
-		expedition.playing = !expedition.playing
-		expedition.step_timer = 0
+		if run_active {
+			playback_toggle()
+		} else {
+			launch_run()
+		}
 	}
+	// Space: step the playback cursor forward a day (launches paused if needed).
+	if k2.key_went_down(.Space) {
+		if run_active {
+			playback_step(1)
+		} else {
+			launch_run()
+			playback.playing = false
+		}
+	}
+	// Left/Right: scrub the playback timeline.
+	if run_active && k2.key_went_down(.Right) do playback_step(1)
+	if run_active && k2.key_went_down(.Left) do playback_step(-1)
 
-	// Left click: set pathfinding goal.
+	// Left click: set pathfinding goal (cancels any precomputed run).
 	if k2.mouse_button_went_down(.Left) && globe_blend() <= 0 {
 		goal := world_to_hex(k2.screen_to_world(k2.get_mouse_position(), camera), HEX_SIZE, ORIENT)
+		run_clear()
 		expedition_set_goal(goal)
 	}
 }
@@ -555,6 +582,7 @@ step :: proc() -> bool {
 		bake_world()
 		prev_world_seed = world_seed
 		prev_noise_freq = noise_freq
+		run_clear()
 		expedition_reset_world()
 	}
 
