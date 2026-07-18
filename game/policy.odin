@@ -57,11 +57,18 @@ find_forage_target :: proc(from: Hex, max_dist: i32) -> (Hex, bool) {
 	return best, found
 }
 
+// How strongly a vantage's progress toward the goal weighs in its reveal score.
+REVEAL_ALIGN_WEIGHT :: f32(8)
+
 // Prefer revealed Hills, else believed Hill/Mountain, within search radius.
-find_reveal_target :: proc(from: Hex, radius: i32) -> (Hex, bool) {
+// When `toward_only` is set, only vantages that lie closer to `goal` than the
+// current position are considered, and progress toward `goal` dominates the
+// score — so the surveyor climbs to see ahead rather than re-scouting behind it.
+find_reveal_target :: proc(from: Hex, radius: i32, goal: Hex, toward_only: bool) -> (Hex, bool) {
 	best: Hex
 	best_score: f32 = -1
 	found := false
+	goal_dist := hex_distance(from, goal)
 
 	for dq in -radius ..= radius {
 		r1 := max(-radius, -dq - radius)
@@ -70,6 +77,11 @@ find_reveal_target :: proc(from: Hex, radius: i32) -> (Hex, bool) {
 			h := Hex{from[0] + dq, from[1] + dr, -from[0] - dq - from[1] - dr}
 			if h == from || !in_arena(h) {
 				continue
+			}
+			// Progress toward the goal: positive means this vantage is ahead.
+			align := f32(goal_dist - hex_distance(h, goal))
+			if toward_only && align <= 0 {
+				continue // not in the direction of the target — skip it
 			}
 			kind, conf := dominant_terrain(h)
 			vision: i32
@@ -98,6 +110,9 @@ find_reveal_target :: proc(from: Hex, radius: i32) -> (Hex, bool) {
 				}
 				vision = vision_radius(kind)
 				score = f32(vision) * 10 * conf - f32(hex_distance(from, h))
+			}
+			if toward_only {
+				score += align * REVEAL_ALIGN_WEIGHT
 			}
 			if score > best_score {
 				best_score = score
@@ -190,7 +205,7 @@ policy_evaluate :: proc() -> bool {
 			}
 		}
 		if need_reveal {
-			if target, ok := find_reveal_target(cur, REVEAL_SEARCH_RADIUS); ok {
+			if target, ok := find_reveal_target(cur, REVEAL_SEARCH_RADIUS, expedition.primary_goal, d.reveal_toward_goal); ok {
 				expedition.mode = .Revealing
 				expedition.temp_goal = target
 				expedition.has_temp = true

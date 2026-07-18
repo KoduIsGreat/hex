@@ -48,6 +48,7 @@ Doctrine :: struct {
 	max_detour:          f32,
 	min_confidence:      f32,
 	max_reveal_attempts: int,
+	reveal_toward_goal:  bool, // Smart Reveal only climbs vantages toward the target
 }
 
 doctrine_cautious :: proc() -> Doctrine {
@@ -93,6 +94,7 @@ doctrine_aggressive_surveyor :: proc() -> Doctrine {
 		max_detour          = 16,
 		min_confidence      = 0.35,
 		max_reveal_attempts = 5,
+		reveal_toward_goal  = true, // survey ahead toward the objective, not behind
 	}
 }
 
