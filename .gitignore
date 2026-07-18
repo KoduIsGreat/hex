@@ -6,3 +6,6 @@ game.bin
 
 # Local save file written at runtime.
 wayfinder_save.json
+
+# Odin default output binary (named after the source dir)
+/game/game
