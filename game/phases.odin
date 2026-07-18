@@ -191,18 +191,67 @@ panel_sim :: proc() {
 	last := max(0, len(run_result.days) - 1)
 	label_row("Day", fmt.tprintf("%v / %v", playback.cursor, last))
 	label_row("Rations", fmt.tprintf("%.1f", expedition.rations))
-	label_row("Mode", mission_mode_name(expedition.mode))
 
+	// Compact transport controls: play/pause + step.
+	panel_begin(
+		"sim_ctrl",
+		{sizing = {clay.SizingGrow({}), clay.SizingFit({})}, row = true, gap = 8, transparent = true},
+	)
 	if button("sim_play", playback.playing ? "Pause" : "Play") {
 		playback_toggle()
 	}
-	if button("sim_prev", "<  Prev day") {
+	if button("sim_prev", "<", {width = 44}) {
 		playback_step(-1)
 	}
-	if button("sim_next", "Next day  >") {
+	if button("sim_next", ">", {width = 44}) {
 		playback_step(1)
 	}
-	ui_spacer()
+	panel_end()
+
+	// This day's decision - updates as playback advances so you can follow why
+	// the explorer moved where it did, day by day.
+	clay.Text("This day's decision", text_cfg(12, TEXT_LO))
+	cur_reason := ""
+	if playback.cursor >= 0 && playback.cursor < len(run_result.days) {
+		cur_reason = run_result.days[playback.cursor].reason
+	}
+	if clay.UI(clay.ID("sim_today"))(
+	{
+		layout = {sizing = {clay.SizingGrow({}), clay.SizingFit({})}, padding = clay.PaddingAll(10)},
+		backgroundColor = BG_CARD,
+		cornerRadius = clay.CornerRadiusAll(5),
+	},
+	) {
+		clay.Text(cur_reason == "" ? "(moved without a logged decision)" : cur_reason, text_cfg(14, TEXT_HI))
+	}
+
+	// Running decision log up to the current day; the current day is highlighted.
+	clay.Text("Decision log", text_cfg(12, TEXT_LO))
+	scroll_begin("sim_log")
+	for i in 0 ..= playback.cursor {
+		if i >= len(run_result.days) {
+			break
+		}
+		d := run_result.days[i]
+		if d.reason == "" {
+			continue
+		}
+		cur := i == playback.cursor
+		if clay.UI(clay.ID(fmt.tprintf("sl%d", i)))(
+		{
+			layout = {sizing = {clay.SizingGrow({}), clay.SizingFit({})}, padding = clay.PaddingAll(6)},
+			backgroundColor = cur ? ACCENT_DIM : (i % 2 == 0 ? BG_CARD : BG_CARD_ALT),
+			cornerRadius = clay.CornerRadiusAll(4),
+		},
+		) {
+			clay.Text(
+				fmt.tprintf("D%v [%s] %s", d.day, mission_mode_name(d.mode), d.reason),
+				text_cfg(12, cur ? TEXT_DARK : TEXT_HI),
+			)
+		}
+	}
+	scroll_end()
+
 	if button("sim_analyze", "Skip to Analysis  ->", {accent = true}) {
 		do_skip_to_analysis()
 	}
