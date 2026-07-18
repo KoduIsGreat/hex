@@ -89,7 +89,12 @@ init :: proc() {
 	}
 
 	// Load a save (if any) before baking, so the world uses the saved seed.
-	soc, loaded := society_load()
+	// --fresh (debug) skips the load to start from a clean default world.
+	soc: Society
+	loaded: bool
+	if !debug_fresh {
+		soc, loaded = society_load()
+	}
 	if loaded {
 		world_seed = soc.seed
 		noise_freq = soc.noise_freq
@@ -195,7 +200,19 @@ visible_hex_bounds :: proc(c: k2.Camera, size: f32, orient: Orientation) -> HexB
 
 
 main :: proc() {
+	cfg := debug_parse_args()
+
+	// Headless: no window, run one simulation and dump its trace (see debug.odin).
+	if cfg.headless {
+		debug_run_headless(cfg)
+		return
+	}
+
+	debug_fresh = cfg.fresh
 	init()
+	if cfg.phase_set {
+		debug_enter_phase(cfg)
+	}
 	for step() {}
 	society_save() // persist the accumulated known world on quit
 	run_clear()

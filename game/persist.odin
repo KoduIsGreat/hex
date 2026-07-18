@@ -25,7 +25,13 @@ prestige: int
 funding: int
 world_revealed: map[Hex]bool // persistent accumulated known world
 
+// Cleared by headless/debug runs so they never touch the on-disk save.
+persist_enabled := true
+
 society_save :: proc() {
+	if !persist_enabled {
+		return
+	}
 	soc: Society
 	soc.seed = world_seed
 	soc.noise_freq = noise_freq
