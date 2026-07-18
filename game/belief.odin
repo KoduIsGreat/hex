@@ -14,6 +14,10 @@ BeliefTile :: struct {
 
 beliefs: map[Hex]BeliefTile
 
+// Fogged tiles recomputed by the last belief_update (surfaced in the HUD to
+// confirm incremental cost stays bounded regardless of explored area).
+belief_dirty_count: int
+
 belief_init :: proc() {
 	if beliefs == nil {
 		beliefs = make(map[Hex]BeliefTile)
@@ -87,6 +91,37 @@ belief_recompute :: proc() {
 			}
 		}
 	}
+	belief_dirty_count = len(beliefs)
+}
+
+// Incrementally update belief after `newly` tiles were revealed: those tiles are
+// no longer fogged (drop them), and every fogged tile within the regional radius
+// of a newly-revealed tile has changed evidence and is recomputed. Cost scales
+// with tiles-revealed-this-step, not with total explored area. The persistent
+// store means untouched fogged tiles keep their prior belief.
+belief_update :: proc(newly: []Hex) {
+	for n in newly {
+		delete_key(&beliefs, n)
+	}
+	R := BELIEF_REGIONAL_R
+	dirty := make(map[Hex]bool, context.temp_allocator)
+	for n in newly {
+		for dq in -R ..= R {
+			r1 := max(-R, -dq - R)
+			r2 := min(R, -dq + R)
+			for dr in r1 ..= r2 {
+				h := Hex{n[0] + dq, n[1] + dr, -n[0] - dq - n[1] - dr}
+				if !in_arena(h) || is_revealed(h) {
+					continue
+				}
+				dirty[h] = true
+			}
+		}
+	}
+	for h in dirty {
+		beliefs[h] = infer_belief(h)
+	}
+	belief_dirty_count = len(dirty)
 }
 
 infer_belief :: proc(h: Hex) -> BeliefTile {

@@ -54,6 +54,7 @@ expedition_init :: proc() {
 	expedition.path = PathResult{path = make([dynamic]Hex)}
 	expedition_set_status("Click a tile to set goal. [Space] step. [Enter] play. [1/2/3] doctrine. [B] belief.")
 
+	reveal_begin()
 	reveal_around(expedition.explorer.hex, START_VISION)
 	reveal_from_tile(expedition.explorer.hex)
 	belief_recompute()
@@ -76,6 +77,7 @@ expedition_reset_world :: proc() {
 	expedition.home = Hex{0, 0, 0}
 	expedition.explorer.hex = expedition.home
 	expedition.explorer.pos = hex_to_world(expedition.explorer.hex, HEX_SIZE, ORIENT)
+	reveal_begin()
 	reveal_around(expedition.explorer.hex, START_VISION)
 	reveal_from_tile(expedition.explorer.hex)
 	belief_recompute()
@@ -201,8 +203,9 @@ expedition_step :: proc() -> bool {
 	expedition.path_index += 1
 	expedition.days_elapsed += 1
 
+	reveal_begin()
 	reveal_from_tile(next)
-	belief_recompute()
+	belief_update(newly_revealed[:])
 
 	pay := true_day_cost(next)
 	expedition.rations -= pay

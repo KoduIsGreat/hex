@@ -9,17 +9,30 @@ FOG_COLOR :: k2.Color{18, 22, 32, 220}
 
 revealed: map[Hex]bool
 
+// Hexes revealed since the last reveal_begin. Consumed by belief_update so
+// belief only recomputes near freshly-revealed ground (see belief.odin).
+newly_revealed: [dynamic]Hex
+
 fog_init :: proc() {
 	if revealed == nil {
 		revealed = make(map[Hex]bool)
+		newly_revealed = make([dynamic]Hex)
 	} else {
 		clear(&revealed)
+		clear(&newly_revealed)
 	}
 }
 
 fog_shutdown :: proc() {
 	delete(revealed)
+	delete(newly_revealed)
 	revealed = {}
+	newly_revealed = {}
+}
+
+// Begin a reveal batch: clears the newly-revealed accumulator.
+reveal_begin :: proc() {
+	clear(&newly_revealed)
 }
 
 in_arena :: proc(h: Hex) -> bool {
@@ -32,8 +45,9 @@ is_revealed :: proc(h: Hex) -> bool {
 }
 
 reveal_hex :: proc(h: Hex) {
-	if in_arena(h) {
+	if in_arena(h) && !(h in revealed) {
 		revealed[h] = true
+		append(&newly_revealed, h)
 	}
 }
 

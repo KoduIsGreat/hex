@@ -423,13 +423,14 @@ draw_hud :: proc() {
 	)
 
 	info := fmt.tprintf(
-		"WAYFINDER PoC\n%s\n%s\ndays: %v  rations: %.1f\npath: %s\nbelief: %s\nseed: %v  zoom: %.2f%s\n\n[click] goal  [Space] step  [Enter] play/pause\n[1/2/3] doctrine  [B] belief  [WASD] pan  [R] seed\n[U] UI  [F11] fullscreen",
+		"WAYFINDER PoC\n%s\n%s\ndays: %v  rations: %.1f\npath: %s\nbelief: %s  upd: %v\nseed: %v  zoom: %.2f%s\n\n[click] goal  [Space] step  [Enter] play/pause\n[1/2/3] doctrine  [B] belief  [WASD] pan  [R] seed\n[U] UI  [F11] fullscreen",
 		expedition.doctrine.name,
 		mode_line,
 		expedition.days_elapsed,
 		expedition.rations,
 		expedition.path.found ? fmt.tprintf("%.1f days", expedition.path.cost) : "none",
 		expedition.show_belief ? "ON" : "OFF",
+		belief_dirty_count,
 		world_seed,
 		camera.zoom,
 		belief_line,
